@@ -1,3 +1,5 @@
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 # -*- coding: utf-8 -*-
 import argparse
 import unittest
@@ -8,6 +10,8 @@ from c7n_mailer import replay
 from c7n_mailer import handle
 from c7n_mailer import sqs_queue_processor
 from c7n_mailer import cli
+from c7n_mailer import deploy
+from c7n.mu import PythonPackageArchive
 from common import MAILER_CONFIG
 
 
@@ -34,6 +38,10 @@ class AWSMailerTests(unittest.TestCase):
                 https_proxy
             ]
         )
+        # Clear http proxy
+        MAILER_CONFIG['http_proxy'] = ''
+        MAILER_CONFIG['https_proxy'] = ''
+        config = handle.config_setup(MAILER_CONFIG)
 
     def test_sqs_queue_processor(self):
         mailer_sqs_queue_processor = sqs_queue_processor.MailerSqsQueueProcessor(
@@ -52,3 +60,13 @@ class AWSMailerTests(unittest.TestCase):
             [session.region_name, session.profile_name],
             ['us-east-1', 'default']
         )
+
+
+class DeployTests(unittest.TestCase):
+
+    def test_get_archive(self):
+        archive = deploy.get_archive({'templates_folders': []})
+        assert isinstance(archive, PythonPackageArchive)
+        # basic sanity checks using random, low values
+        assert archive.size > 10000  # this should really be about 1.5 MB
+        assert len(archive.get_filenames()) > 50  # should be > 500

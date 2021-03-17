@@ -1,27 +1,16 @@
-# Copyright 2016-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 """
 Query capability built on skew metamodel
 
 tags_spec -> s3, elb, rds
 """
+from concurrent.futures import as_completed
 import functools
 import itertools
 import json
 
 import jmespath
-import six
 import os
 
 from c7n.actions import ActionRegistry
@@ -108,7 +97,7 @@ class ResourceQuery:
         if client_filter:
             # This logic was added to prevent the issue from:
             # https://github.com/cloud-custodian/cloud-custodian/issues/1398
-            if all(map(lambda r: isinstance(r, six.string_types), resources)):
+            if all(map(lambda r: isinstance(r, str), resources)):
                 resources = [r for r in resources if r in identities]
             else:
                 resources = [r for r in resources if r[m.id] in identities]
@@ -131,7 +120,7 @@ class ChildResourceQuery(ResourceQuery):
         self.session_factory = session_factory
         self.manager = manager
 
-    def filter(self, resource_manager, **params):
+    def filter(self, resource_manager, parent_ids=None, **params):
         """Query a set of resources."""
         m = self.resolve(resource_manager.resource_type)
         client = local_session(self.session_factory).client(m.service)
@@ -142,7 +131,13 @@ class ChildResourceQuery(ResourceQuery):
 
         parent_type, parent_key, annotate_parent = m.parent_spec
         parents = self.manager.get_resource_manager(parent_type)
-        parent_ids = [p[parents.resource_type.id] for p in parents.resources()]
+        if not parent_ids:
+            parent_ids = []
+            for p in parents.resources(augment=False):
+                if isinstance(p, str):
+                    parent_ids.append(p)
+                else:
+                    parent_ids.append(p[parents.resource_type.id])
 
         # Bail out with no parent ids...
         existing_param = parent_key in params
@@ -285,6 +280,7 @@ class ConfigSource:
 
     def __init__(self, manager):
         self.manager = manager
+        self.titleCase = self.manager.resource_type.id[0].isupper()
 
     def get_permissions(self):
         return ["config:GetResourceConfigHistory",
@@ -334,8 +330,8 @@ class ConfigSource:
         else:
             _c = None
 
-        s = "select configuration, supplementaryConfiguration where resourceType = '{}'".format(
-            self.manager.resource_type.config_type)
+        s = ("select resourceId, configuration, supplementaryConfiguration "
+             "where resourceType = '{}'").format(self.manager.resource_type.config_type)
 
         if _c:
             s += "AND {}".format(_c)
@@ -343,11 +339,63 @@ class ConfigSource:
         return {'expr': s}
 
     def load_resource(self, item):
-        if isinstance(item['configuration'], six.string_types):
+        item_config = self._load_item_config(item)
+        resource = camelResource(
+            item_config, implicitDate=True, implicitTitle=self.titleCase)
+        self._load_resource_tags(resource, item)
+        return resource
+
+    def _load_item_config(self, item):
+        if isinstance(item['configuration'], str):
             item_config = json.loads(item['configuration'])
         else:
             item_config = item['configuration']
-        return camelResource(item_config)
+        return item_config
+
+    def _load_resource_tags(self, resource, item):
+        # normalized tag loading across the many variants of config's inconsistencies.
+        if 'Tags' in resource:
+            return
+        elif item.get('tags'):
+            resource['Tags'] = [
+                {u'Key': k, u'Value': v} for k, v in item['tags'].items()]
+        elif item['supplementaryConfiguration'].get('Tags'):
+            stags = item['supplementaryConfiguration']['Tags']
+            if isinstance(stags, str):
+                stags = json.loads(stags)
+            if isinstance(stags, list):
+                resource['Tags'] = [{u'Key': t['key'], u'Value': t['value']} for t in stags]
+            elif isinstance(stags, dict):
+                resource['Tags'] = [{u'Key': k, u'Value': v} for k, v in stags.items()]
+
+    def get_listed_resources(self, client):
+        # fallback for when config decides to arbitrarily break select
+        # resource for a given resource type.
+        paginator = client.get_paginator('list_discovered_resources')
+        paginator.PAGE_ITERATOR_CLS = RetryPageIterator
+        pages = paginator.paginate(
+            resourceType=self.manager.get_model().config_type)
+        results = []
+
+        with self.manager.executor_factory(max_workers=2) as w:
+            ridents = pages.build_full_result()
+            resource_ids = [
+                r['resourceId'] for r in ridents.get('resourceIdentifiers', ())]
+            self.manager.log.debug(
+                "querying %d %s resources",
+                len(resource_ids),
+                self.manager.__class__.__name__.lower())
+
+            for resource_set in chunks(resource_ids, 50):
+                futures = []
+                futures.append(w.submit(self.get_resources, resource_set))
+                for f in as_completed(futures):
+                    if f.exception():
+                        self.manager.log.error(
+                            "Exception getting resources from config \n %s" % (
+                                f.exception()))
+                    results.extend(f.result())
+        return results
 
     def resources(self, query=None):
         client = local_session(self.manager.session_factory).client('config')
@@ -363,14 +411,19 @@ class ConfigSource:
         for page in pager.paginate(Expression=query['expr']):
             results.extend([
                 self.load_resource(json.loads(r)) for r in page['Results']])
+
+        # Config arbitrarily breaks which resource types its supports for query/select
+        # on any given day, if we don't have a user defined query, then fallback
+        # to iteration mode.
+        if not results and query == self.get_query_params({}):
+            results = self.get_listed_resources(client)
         return results
 
     def augment(self, resources):
         return resources
 
 
-@six.add_metaclass(QueryMeta)
-class QueryResourceManager(ResourceManager):
+class QueryResourceManager(ResourceManager, metaclass=QueryMeta):
 
     resource_type = ""
 
@@ -387,8 +440,11 @@ class QueryResourceManager(ResourceManager):
             'ThrottlingException',
             'RequestLimitExceeded',
             'Throttled',
+            'ThrottledException',
             'Throttling',
             'Client.RequestLimitExceeded')))
+
+    source_mapping = sources
 
     def __init__(self, data, options):
         super(QueryResourceManager, self).__init__(data, options)
@@ -399,7 +455,7 @@ class QueryResourceManager(ResourceManager):
         return self.data.get('source', 'describe')
 
     def get_source(self, source_type):
-        return sources.get(source_type)(self)
+        return self.source_mapping.get(source_type)(self)
 
     @classmethod
     def has_arn(cls):
@@ -459,7 +515,8 @@ class QueryResourceManager(ResourceManager):
             if augment:
                 with self.ctx.tracer.subsegment('resource-augment'):
                     resources = self.augment(resources)
-            self._cache.save(cache_key, resources)
+                # Don't pollute cache with unaugmented resources.
+                self._cache.save(cache_key, resources)
 
         resource_count = len(resources)
         with self.ctx.tracer.subsegment('filter'):
@@ -690,9 +747,10 @@ class RetryPageIterator(PageIterator):
 class TypeMeta(type):
 
     def __repr__(cls):
-        identifier = None
         if cls.config_type:
             identifier = cls.config_type
+        elif cls.cfn_type:
+            identifier = cls.cfn_type
         elif cls.arn_type:
             identifier = "AWS::%s::%s" % (cls.service.title(), cls.arn_type.title())
         elif cls.enum_spec:
@@ -702,8 +760,7 @@ class TypeMeta(type):
         return "<TypeInfo %s>" % identifier
 
 
-@six.add_metaclass(TypeMeta)
-class TypeInfo:
+class TypeInfo(metaclass=TypeMeta):
     """Resource Type Metadata"""
 
     ###########
@@ -783,6 +840,9 @@ class TypeInfo:
     # resource id can be passed as this value. further customizations
     # of dimensions require subclass metrics filter.
     dimension = None
+
+    # AWS Cloudformation type
+    cfn_type = None
 
     # AWS Config Service resource type name
     config_type = None

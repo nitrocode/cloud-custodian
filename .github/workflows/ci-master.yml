@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - uses: actions/setup-python@v1
+      - uses: actions/setup-python@v2
         with:
           python-version: 3.8
       - name: Install Linter
@@ -30,10 +30,13 @@ jobs:
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest]
-        python-version: [3.6, 3.7, 3.8]
+        python-version: [3.6, 3.7, 3.8, 3.9]
         exclude:
           # conserve some osx builders
           - python-version: 3.6
+            os: macos-latest
+          # conserve some osx builders
+          - python-version: 3.9
             os: macos-latest
         include:
           - python-version: 3.6
@@ -45,6 +48,9 @@ jobs:
           - python-version: 3.8
             os: ubuntu-latest
             tox-target: py38-cov
+          - python-version: 3.9
+            os: ubuntu-latest
+            tox-target: py39
           - python-version: 3.7
             tox-target: py37
             os: macos-latest
@@ -53,8 +59,10 @@ jobs:
             os: macos-latest
     steps:
       - uses: actions/checkout@v2
+        with:
+          fetch-depth: 2
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v1
+        uses: actions/setup-python@v2
         with:
           python-version: ${{ matrix.python-version }}
       - name: Set up cache
@@ -78,7 +86,7 @@ jobs:
         run: |
           ./.tox/${{ matrix.tox-target }}/bin/coverage xml && \
           bash <(curl -s https://codecov.io/bash) -Z \
-          -f coverage.xml
+          -v -f coverage.xml
 
   Test-Windows:
     # windows can't use the fast cache technique we use in our matrix builds
@@ -91,7 +99,7 @@ jobs:
       - uses: actions/checkout@v2
       - uses: actions/setup-python@v1
         with:
-          python-version: 3.8
+          python-version: 3.7
       - name: Set up cache
         uses: actions/cache@v1
         with:
@@ -103,10 +111,10 @@ jobs:
           pip install tox codecov
       - name: Install Deps
         run: |
-          tox -e py38 --notest
+          tox -e py37 --notest
       - name: Test
         run: |
-          tox -e py38
+          tox -e py37
 
   Docs:
     # todo, figure out how to fast cache the tox directory here.

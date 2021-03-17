@@ -1,22 +1,10 @@
-# Copyright 2016-2018 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 """
 Application & Network Load Balancers
 """
 import json
 import logging
-import six
 
 from collections import defaultdict
 from c7n.actions import ActionRegistry, BaseAction, ModifyVpcSecurityGroupsAction
@@ -35,44 +23,6 @@ from c7n.resources.aws import Arn
 from c7n.resources.shield import IsShieldProtected, SetShieldProtection
 
 log = logging.getLogger('custodian.app-elb')
-
-
-@resources.register('app-elb')
-class AppELB(QueryResourceManager):
-    """Resource manager for v2 ELBs (AKA ALBs and NLBs).
-    """
-
-    class resource_type(TypeInfo):
-        service = 'elbv2'
-        permission_prefix = 'elasticloadbalancing'
-        enum_spec = ('describe_load_balancers', 'LoadBalancers', None)
-        name = 'LoadBalancerName'
-        id = 'LoadBalancerArn'
-        filter_name = "Names"
-        filter_type = "list"
-        dimension = "LoadBalancer"
-        date = 'CreatedTime'
-        config_type = 'AWS::ElasticLoadBalancingV2::LoadBalancer'
-        arn = "LoadBalancerArn"
-        # The suffix varies by type of loadbalancer (app vs net)
-        arn_type = 'loadbalancer/app'
-
-    retry = staticmethod(get_retry(('Throttling',)))
-
-    @classmethod
-    def get_permissions(cls):
-        # override as the service is not the iam prefix
-        return ("elasticloadbalancing:DescribeLoadBalancers",
-                "elasticloadbalancing:DescribeLoadBalancerAttributes",
-                "elasticloadbalancing:DescribeTags")
-
-    def get_source(self, source_type):
-        if source_type == 'describe':
-            return DescribeAppElb(self)
-        elif source_type == 'config':
-            return ConfigAppElb(self)
-        raise ValueError("Unsupported source: %s for %s" % (
-            source_type, self.resource_type.config_type))
 
 
 class DescribeAppElb(DescribeSource):
@@ -100,24 +50,49 @@ class ConfigAppElb(ConfigSource):
 
     def load_resource(self, item):
         resource = super(ConfigAppElb, self).load_resource(item)
-        item_tags = item['supplementaryConfiguration']['Tags']
-
-        # Config originally stored supplementaryconfig on elbv2 as json
-        # strings. Support that format for historical queries.
-        if isinstance(item_tags, six.string_types):
-            item_tags = json.loads(item_tags)
-        resource['Tags'] = [
-            {'Key': t['key'], 'Value': t['value']} for t in item_tags]
-
         item_attrs = item['supplementaryConfiguration'][
             'LoadBalancerAttributes']
-        if isinstance(item_attrs, six.string_types):
+        if isinstance(item_attrs, str):
             item_attrs = json.loads(item_attrs)
         # Matches annotation of AppELBAttributeFilterBase filter
         resource['Attributes'] = {
             attr['key']: parse_attribute_value(attr['value']) for
             attr in item_attrs}
         return resource
+
+
+@resources.register('app-elb')
+class AppELB(QueryResourceManager):
+    """Resource manager for v2 ELBs (AKA ALBs and NLBs).
+    """
+
+    class resource_type(TypeInfo):
+        service = 'elbv2'
+        permission_prefix = 'elasticloadbalancing'
+        enum_spec = ('describe_load_balancers', 'LoadBalancers', None)
+        name = 'LoadBalancerName'
+        id = 'LoadBalancerArn'
+        filter_name = "Names"
+        filter_type = "list"
+        dimension = "LoadBalancer"
+        date = 'CreatedTime'
+        cfn_type = config_type = 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+        arn = "LoadBalancerArn"
+        # The suffix varies by type of loadbalancer (app vs net)
+        arn_type = 'loadbalancer/app'
+
+    retry = staticmethod(get_retry(('Throttling',)))
+    source_mapping = {
+        'describe': DescribeAppElb,
+        'config': ConfigAppElb
+    }
+
+    @classmethod
+    def get_permissions(cls):
+        # override as the service is not the iam prefix
+        return ("elasticloadbalancing:DescribeLoadBalancers",
+                "elasticloadbalancing:DescribeLoadBalancerAttributes",
+                "elasticloadbalancing:DescribeTags")
 
 
 def _describe_appelb_tags(albs, session_factory, executor_factory, retry):
@@ -327,9 +302,7 @@ class SetS3Logging(BaseAction):
               - name: elbv2-test
                 resource: app-elb
                 filters:
-                  - type: value
-                    key: Attributes."access_logs.s3.enabled"
-                    value: False
+                  - type: is-not-logging
                 actions:
                   - type: set-s3-logging
                     bucket: elbv2logtest
@@ -511,6 +484,73 @@ class AppELBDeleteAction(BaseAction):
                 alb['LoadBalancerArn'], e)
 
 
+@AppELB.action_registry.register('modify-attributes')
+class AppELBModifyAttributes(BaseAction):
+    """Modify load balancer attributes.
+
+    :example:
+
+    .. code-block:: yaml
+
+            policies:
+              - name: turn-on-elb-deletion-protection
+                resource: app-elb
+                filters:
+                  - type: attributes
+                    key: "deletion_protection.enabled"
+                    value: false
+                actions:
+                  - type: modify-attributes
+                    attributes:
+                      "deletion_protection.enabled": "true"
+                      "idle_timeout.timeout_seconds": 120
+    """
+    schema = {
+        'type': 'object',
+        'additionalProperties': False,
+        'properties': {
+            'type': {
+                'enum': ['modify-attributes']},
+            'attributes': {
+                'type': 'object',
+                'additionalProperties': False,
+                'properties': {
+                    'access_logs.s3.enabled': {
+                        'enum': ['true', 'false', True, False]},
+                    'access_logs.s3.bucket': {'type': 'string'},
+                    'access_logs.s3.prefix': {'type': 'string'},
+                    'deletion_protection.enabled': {
+                        'enum': ['true', 'false', True, False]},
+                    'idle_timeout.timeout_seconds': {'type': 'number'},
+                    'routing.http.desync_mitigation_mode': {
+                        'enum': ['monitor', 'defensive', 'strictest']},
+                    'routing.http.drop_invalid_header_fields.enabled': {
+                        'enum': ['true', 'false', True, False]},
+                    'routing.http2.enabled': {
+                        'enum': ['true', 'false', True, False]},
+                    'load_balancing.cross_zone.enabled': {
+                        'enum': ['true', 'false', True, False]},
+                },
+            },
+        },
+    }
+    permissions = ("elasticloadbalancing:ModifyLoadBalancerAttributes",)
+
+    def process(self, resources):
+        client = local_session(self.manager.session_factory).client('elbv2')
+        for appelb in resources:
+            self.manager.retry(
+                client.modify_load_balancer_attributes,
+                LoadBalancerArn=appelb['LoadBalancerArn'],
+                Attributes=[
+                    {'Key': key, 'Value': serialize_attribute_value(value)}
+                    for (key, value) in self.data['attributes'].items()
+                ],
+                ignore_err_codes=('LoadBalancerNotFoundException',),
+            )
+        return resources
+
+
 class AppELBListenerFilterBase:
     """ Mixin base class for filters that query LB listeners.
     """
@@ -535,6 +575,16 @@ def parse_attribute_value(v):
         v = True
     elif v == 'false':
         v = False
+    return v
+
+
+def serialize_attribute_value(v):
+    if v is True:
+        return 'true'
+    elif v is False:
+        return 'false'
+    elif isinstance(v, int):
+        return str(v)
     return v
 
 
@@ -645,6 +695,39 @@ class IsNotLoggingFilter(Filter, AppELBAttributeFilterBase):
                     'access_logs.s3.prefix', None))]
 
 
+@AppELB.filter_registry.register('attributes')
+class CheckAttributes(ValueFilter, AppELBAttributeFilterBase):
+    """ Value filter that allows filtering on ELBv2 attributes
+
+    :example:
+
+    .. code-block:: yaml
+
+            policies:
+                - name: alb-http2-enabled
+                  resource: app-elb
+                  filters:
+                    - type: attributes
+                      key: routing.http2.enabled
+                      value: true
+                      op: eq
+    """
+    annotate: False  # no annotation from value Filter
+    permissions = ("elasticloadbalancing:DescribeLoadBalancerAttributes",)
+    schema = type_schema('attributes', rinherit=ValueFilter.schema)
+    schema_alias = False
+
+    def process(self, resources, event=None):
+        self.augment(resources)
+        return super().process(resources, event)
+
+    def augment(self, resources):
+        self.initialize(resources)
+
+    def __call__(self, r):
+        return super().__call__(r['Attributes'])
+
+
 class AppELBTargetGroupFilterBase:
     """ Mixin base class for filters that query LB target groups.
     """
@@ -748,7 +831,7 @@ class AppELBModifyListenerPolicy(BaseAction):
     schema = type_schema(
         'modify-listener',
         port={'type': 'integer'},
-        protocol={'enum': ['HTTP', 'HTTPS']},
+        protocol={'enum': ['HTTP', 'HTTPS', 'TCP', 'TLS', 'UDP', 'TCP_UDP', 'GENEVE']},
         sslpolicy={'type': 'string'},
         certificate={'type': 'string'}
     )
@@ -885,6 +968,7 @@ class AppELBTargetGroup(QueryResourceManager):
         name = 'TargetGroupName'
         id = 'TargetGroupArn'
         permission_prefix = 'elasticloadbalancing'
+        cfn_type = 'AWS::ElasticLoadBalancingV2::TargetGroup'
 
     filter_registry = FilterRegistry('app-elb-target-group.filters')
     action_registry = ActionRegistry('app-elb-target-group.actions')

@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
 #
-# Copyright 2018 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 
 import click
 import contextlib
@@ -21,7 +10,7 @@ from datetime import datetime, timedelta
 from dateutil.tz import tzoffset, tzutc
 from dateutil.parser import parse
 from fnmatch import fnmatch
-from functools import partial
+from functools import partial, reduce
 import jmespath
 import json
 import logging
@@ -30,7 +19,6 @@ import operator
 import os
 import pygit2
 import requests
-import six
 import tempfile
 import yaml
 
@@ -411,11 +399,7 @@ class PolicyRepo:
                     current_policies += self.policy_files[f]
             elif delta.status == GIT_DELTA_INVERT['GIT_DELTA_DELETED']:
                 if f in self.policy_files:
-                    # if the policies were moved, only add in policies
-                    # that are not already accounted for.
-                    current_policies += self.policy_files[f].select(
-                        set(current_policies.keys()).difference(
-                            self.policy_files[f].keys()))
+                    current_policies += self.policy_files[f]
                     removed.add(f)
             elif delta.status == GIT_DELTA_INVERT['GIT_DELTA_RENAMED']:
                 change_policies += self._policy_file_rev(f, change)
@@ -577,7 +561,7 @@ class SQLTransport(IndexedTransport):
             'select max(commit_date) from policy_changes').fetchone()[0]
         if not value:
             return None
-        if isinstance(value, six.string_types):
+        if isinstance(value, str):
             last_seen = parse(value)
             last_seen = last_seen.replace(tzinfo=tzutc())
         return last_seen
@@ -923,7 +907,7 @@ def stream(repo_uri, stream_uri, verbose, assume, sort, before=None, after=None)
     if after:
         after = parse(after)
     if sort:
-        sort = six.moves.reduce(operator.or_, [SORT_TYPE[s] for s in sort])
+        sort = reduce(operator.or_, [SORT_TYPE[s] for s in sort])
 
     with contextlib.closing(TempDir().open()) as temp_dir:
         if repo_uri is None:

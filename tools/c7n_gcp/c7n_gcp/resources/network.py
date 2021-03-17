@@ -1,16 +1,5 @@
-# Copyright 2018 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 import re
 
 from c7n_gcp.actions import MethodAction
@@ -28,11 +17,12 @@ class Network(QueryResourceManager):
         service = 'compute'
         version = 'v1'
         component = 'networks'
-        scope_template = "projects/{}/global/networks"
+        scope_template = "{}"
         name = id = "name"
         default_report_fields = [
             "name", "description", "creationTimestamp",
             "autoCreateSubnetworks", "IPv4Range", "gatewayIPv4"]
+        asset_type = "compute.googleapis.com/Network"
 
 
 @resources.register('subnet')
@@ -48,6 +38,7 @@ class Subnet(QueryResourceManager):
         default_report_fields = [
             "name", "description", "creationTimestamp", "ipCidrRange",
             "gatewayAddress", "region", "state"]
+        asset_type = "compute.googleapis.com/Subnetwork"
 
         @staticmethod
         def get(client, resource_info):
@@ -90,6 +81,7 @@ class SetFlowLog(SubnetAction):
         'set-flow-log',
         state={'type': 'boolean', 'default': True})
     method_spec = {'op': 'patch'}
+    method_perm = 'update'
 
     def get_resource_params(self, m, r):
         params = super(SetFlowLog, self).get_resource_params(m, r)
@@ -126,12 +118,44 @@ class Firewall(QueryResourceManager):
         default_report_fields = [
             name, "description", "network", "priority", "creationTimestamp",
             "logConfig.enabled", "disabled"]
+        asset_type = "compute.googleapis.com/Firewall"
 
         @staticmethod
         def get(client, resource_info):
             return client.execute_query(
                 'get', {'project': resource_info['project_id'],
                         'firewall': resource_info['resourceName'].rsplit('/', 1)[-1]})
+
+
+@Firewall.action_registry.register('delete')
+class DeleteFirewall(MethodAction):
+    """Delete filtered Firewall Rules
+
+    :example: Delete firewall rule
+
+    .. yaml:
+
+     policies:
+       - name: delete-public-access-firewall-rules
+         resource: gcp.firewall
+         filters:
+         - type: value
+           key: sourceRanges
+           value: "0.0.0.0/0"
+           op: in
+           value_type: swap
+         actions:
+         - delete
+    """
+
+    schema = type_schema('delete')
+    method_spec = {'op': 'delete'}
+    path_param_re = re.compile('.*?/projects/(.*?)/global/firewalls/(.*)')
+
+    def get_resource_params(self, m, r):
+        project, resource_name = self.path_param_re.match(
+            r['selfLink']).groups()
+        return {'project': project, 'firewall': resource_name}
 
 
 @resources.register('router')
@@ -146,6 +170,7 @@ class Router(QueryResourceManager):
         name = id = 'name'
         default_report_fields = [
             "name", "description", "creationTimestamp", "region", "network"]
+        asset_type = "compute.googleapis.com/Router"
 
         @staticmethod
         def get(client, resource_info):
@@ -196,6 +221,7 @@ class Route(QueryResourceManager):
         name = id = 'name'
         default_report_fields = [
             "name", "description", "creationTimestamp", "network", "priority", "destRange"]
+        asset_type = "compute.googleapis.com/Route"
 
         @staticmethod
         def get(client, resource_info):
@@ -217,6 +243,7 @@ class Interconnect(QueryResourceManager):
         default_report_fields = [
             "name", "description", "creationTimestamp", "operationalStatus",
             "linkType", "location"]
+        asset_type = "compute.googleapis.com/Interconnect"
 
         @staticmethod
         def get(client, resource_info):
@@ -238,6 +265,7 @@ class InterconnectAttachment(QueryResourceManager):
         default_report_fields = [
             "name", "description", "creationTimestamp", "interconnect",
             "router", "region", "operationalStatus"]
+        asset_type = "compute.googleapis.com/InterconnectAttachment"
 
         @staticmethod
         def get(client, resource_info):
