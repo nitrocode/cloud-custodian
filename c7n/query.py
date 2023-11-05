@@ -9,8 +9,8 @@ from concurrent.futures import as_completed
 import functools
 import itertools
 import json
+from typing import List
 
-import jmespath
 import os
 
 from c7n.actions import ActionRegistry
@@ -18,9 +18,9 @@ from c7n.exceptions import ClientError, ResourceLimitExceeded, PolicyExecutionEr
 from c7n.filters import FilterRegistry, MetricsFilter
 from c7n.manager import ResourceManager
 from c7n.registry import PluginRegistry
-from c7n.tags import register_ec2_tags, register_universal_tags
+from c7n.tags import register_ec2_tags, register_universal_tags, universal_augment
 from c7n.utils import (
-    local_session, generate_arn, get_retry, chunks, camelResource)
+    local_session, generate_arn, get_retry, chunks, camelResource, jmespath_compile)
 
 
 try:
@@ -59,7 +59,7 @@ class ResourceQuery:
             data = op(**params)
 
         if path:
-            path = jmespath.compile(path)
+            path = jmespath_compile(path)
             data = path.search(data)
 
         return data
@@ -67,8 +67,11 @@ class ResourceQuery:
     def filter(self, resource_manager, **params):
         """Query a set of resources."""
         m = self.resolve(resource_manager.resource_type)
-        client = local_session(self.session_factory).client(
-            m.service, resource_manager.config.region)
+        if resource_manager.get_client:
+            client = resource_manager.get_client()
+        else:
+            client = local_session(self.session_factory).client(
+                m.service, resource_manager.config.region)
         enum_op, path, extra_args = m.enum_spec
         if extra_args:
             params.update(extra_args)
@@ -81,17 +84,17 @@ class ResourceQuery:
         """
         m = self.resolve(resource_manager.resource_type)
         params = {}
-        client_filter = False
+        client_filter = True
 
-        # Try to formulate server side query
+        # Try to formulate server side query in the below two scenarios
+        # else fall back to client side filtering
         if m.filter_name:
             if m.filter_type == 'list':
                 params[m.filter_name] = identities
-            elif m.filter_type == 'scalar':
-                assert len(identities) == 1, "Scalar server side filter"
+                client_filter = False
+            elif m.filter_type == 'scalar' and len(identities) == 1:
                 params[m.filter_name] = identities[0]
-        else:
-            client_filter = True
+                client_filter = False
 
         resources = self.filter(resource_manager, **params)
         if client_filter:
@@ -99,6 +102,9 @@ class ResourceQuery:
             # https://github.com/cloud-custodian/cloud-custodian/issues/1398
             if all(map(lambda r: isinstance(r, str), resources)):
                 resources = [r for r in resources if r in identities]
+            # This logic should fix https://github.com/cloud-custodian/cloud-custodian/issues/7573
+            elif all(map(lambda r: isinstance(r, tuple), resources)):
+                resources = [(p, r) for p, r in resources if r[m.id] in identities]
             else:
                 resources = [r for r in resources if r[m.id] in identities]
 
@@ -123,7 +129,10 @@ class ChildResourceQuery(ResourceQuery):
     def filter(self, resource_manager, parent_ids=None, **params):
         """Query a set of resources."""
         m = self.resolve(resource_manager.resource_type)
-        client = local_session(self.session_factory).client(m.service)
+        if resource_manager.get_client:
+            client = resource_manager.get_client()
+        else:
+            client = local_session(self.session_factory).client(m.service)
 
         enum_op, path, extra_args = m.enum_spec
         if extra_args:
@@ -254,13 +263,24 @@ class DescribeSource:
             _augment = _batch_augment
         else:
             return resources
+        if self.manager.get_client:
+            client = self.manager.get_client()
+        else:
+            client = local_session(self.manager.session_factory).client(
+                model.service, region_name=self.manager.config.region)
         _augment = functools.partial(
-            _augment, self.manager, model, detail_spec)
+            _augment, self.manager, model, detail_spec, client)
         with self.manager.executor_factory(
                 max_workers=self.manager.max_workers) as w:
             results = list(w.map(
                 _augment, chunks(resources, self.manager.chunk_size)))
             return list(itertools.chain(*results))
+
+
+class DescribeWithResourceTags(DescribeSource):
+
+    def augment(self, resources):
+        return universal_augment(self.manager, super().augment(resources))
 
 
 @sources.register('describe-child')
@@ -364,7 +384,11 @@ class ConfigSource:
             if isinstance(stags, str):
                 stags = json.loads(stags)
             if isinstance(stags, list):
-                resource['Tags'] = [{u'Key': t['key'], u'Value': t['value']} for t in stags]
+                resource['Tags'] = [
+                    {u'Key': t.get('key', t.get('tagKey')),
+                     u'Value': t.get('value', t.get('tagValue'))}
+                    for t in stags
+                ]
             elif isinstance(stags, dict):
                 resource['Tags'] = [{u'Key': k, u'Value': v} for k, v in stags.items()]
 
@@ -431,12 +455,11 @@ class QueryResourceManager(ResourceManager, metaclass=QueryMeta):
     max_workers = 3
     chunk_size = 20
 
-    permissions = ()
-
     _generate_arn = None
 
     retry = staticmethod(
         get_retry((
+            'TooManyRequestsException',
             'ThrottlingException',
             'RequestLimitExceeded',
             'Throttled',
@@ -446,8 +469,8 @@ class QueryResourceManager(ResourceManager, metaclass=QueryMeta):
 
     source_mapping = sources
 
-    def __init__(self, data, options):
-        super(QueryResourceManager, self).__init__(data, options)
+    def __init__(self, ctx, data):
+        super(QueryResourceManager, self).__init__(ctx, data)
         self.source = self.get_source(self.source_type)
 
     @property
@@ -455,7 +478,11 @@ class QueryResourceManager(ResourceManager, metaclass=QueryMeta):
         return self.data.get('source', 'describe')
 
     def get_source(self, source_type):
-        return self.source_mapping.get(source_type)(self)
+        if source_type in self.source_mapping:
+            return self.source_mapping.get(source_type)(self)
+        if source_type in sources:
+            return sources[source_type](self)
+        raise KeyError("Invalid Source %s" % source_type)
 
     @classmethod
     def has_arn(cls):
@@ -494,29 +521,28 @@ class QueryResourceManager(ResourceManager, metaclass=QueryMeta):
             'q': query
         }
 
-    def resources(self, query=None, augment=True):
+    def resources(self, query=None, augment=True) -> List[dict]:
         query = self.source.get_query_params(query)
         cache_key = self.get_cache_key(query)
         resources = None
 
-        if self._cache.load():
+        with self._cache:
             resources = self._cache.get(cache_key)
             if resources is not None:
                 self.log.debug("Using cached %s: %d" % (
-                    "%s.%s" % (self.__class__.__module__,
-                               self.__class__.__name__),
+                    "%s.%s" % (self.__class__.__module__, self.__class__.__name__),
                     len(resources)))
 
-        if resources is None:
-            if query is None:
-                query = {}
-            with self.ctx.tracer.subsegment('resource-fetch'):
-                resources = self.source.resources(query)
-            if augment:
-                with self.ctx.tracer.subsegment('resource-augment'):
-                    resources = self.augment(resources)
-                # Don't pollute cache with unaugmented resources.
-                self._cache.save(cache_key, resources)
+            if resources is None:
+                if query is None:
+                    query = {}
+                with self.ctx.tracer.subsegment('resource-fetch'):
+                    resources = self.source.resources(query)
+                if augment:
+                    with self.ctx.tracer.subsegment('resource-augment'):
+                        resources = self.augment(resources)
+                    # Don't pollute cache with unaugmented resources.
+                    self._cache.save(cache_key, resources)
 
         resource_count = len(resources)
         with self.ctx.tracer.subsegment('filter'):
@@ -539,7 +565,7 @@ class QueryResourceManager(ResourceManager, metaclass=QueryMeta):
 
     def _get_cached_resources(self, ids):
         key = self.get_cache_key(None)
-        if self._cache.load():
+        with self._cache:
             resources = self._cache.get(key)
             if resources is not None:
                 self.log.debug("Using cached results for get_resources")
@@ -692,10 +718,8 @@ class ChildResourceManager(QueryResourceManager):
         return self.get_resource_manager(self.resource_type.parent_spec[0])
 
 
-def _batch_augment(manager, model, detail_spec, resource_set):
+def _batch_augment(manager, model, detail_spec, client, resource_set):
     detail_op, param_name, param_key, detail_path, detail_args = detail_spec
-    client = local_session(manager.session_factory).client(
-        model.service, region_name=manager.config.region)
     op = getattr(client, detail_op)
     if manager.retry:
         args = (op,)
@@ -709,10 +733,8 @@ def _batch_augment(manager, model, detail_spec, resource_set):
     return response[detail_path]
 
 
-def _scalar_augment(manager, model, detail_spec, resource_set):
+def _scalar_augment(manager, model, detail_spec, client, resource_set):
     detail_op, param_name, param_key, detail_path = detail_spec
-    client = local_session(manager.session_factory).client(
-        model.service, region_name=manager.config.region)
     op = getattr(client, detail_op)
     if manager.retry:
         args = (op,)
@@ -751,115 +773,108 @@ class TypeMeta(type):
             identifier = cls.config_type
         elif cls.cfn_type:
             identifier = cls.cfn_type
-        elif cls.arn_type:
+        elif cls.arn_type and cls.service:
             identifier = "AWS::%s::%s" % (cls.service.title(), cls.arn_type.title())
-        elif cls.enum_spec:
+        elif cls.enum_spec and cls.service:
             identifier = "AWS::%s::%s" % (cls.service.title(), cls.enum_spec[1])
-        else:
+        elif cls.service:
             identifier = "AWS::%s::%s" % (cls.service.title(), cls.id)
+        else:
+            identifier = cls.__name__
         return "<TypeInfo %s>" % identifier
 
 
 class TypeInfo(metaclass=TypeMeta):
-    """Resource Type Metadata"""
 
-    ###########
+    """
+    Resource Type Metadata
+
+
+    **Required**
+
+    :param id: Identifier used for apis
+    :param name: Used for display
+    :param service: Which aws service (per sdk) has the api for this resource
+    :param enum_spec: Used to query the resource by describe-sources
+
+    **Permissions - Optional**
+
+    :param permission_prefix: Permission string prefix if not service
+    :param permissions_enum: Permissions for resource enumeration/get.
+        Normally we autogen but in some cases we need to specify statically
+    :param permissions_augment: Permissions for resource augment
+
+    **Arn handling / generation metadata - Optional**
+
+    :param arn: Arn resource attribute, when describe format has arn
+    :param arn_type: Type, used for arn construction, also required for universal tag augment
+    :param arn_separator: How arn type is separated from rest of arn
+    :param arn_service: For services that need custom labeling for arns
+
+    **Resource retrieval - Optional**
+
+    :param filter_name: When fetching a single resource via enum_spec this is technically optional,
+        but effectively required for serverless event policies else we have to enumerate the
+        population
+    :param filter_type: filter_type, scalar or list
+    :param detail_spec: Used to enrich the resource descriptions returned by enum_spec
+    :param batch_detail_spec: Used when the api supports getting resource details enmasse
+
+    **Misc - Optional**
+
+    :param default_report_fields: Used for reporting, array of fields
+    :param date: Latest date associated to resource, generally references either create date or
+        modified date
+    :param dimension: Defines that resource has cloud watch metrics and the resource id can be
+        passed as this value. Further customizations of dimensions require subclass metrics filter
+    :param cfn_type: AWS Cloudformation type
+    :param config_type: AWS Config Service resource type name
+    :param config_id: Resource attribute that maps to the resourceId field in AWS Config. Intended
+        for resources which use one ID attribute for service API calls and a different one for
+        AWS Config (example: IAM resources).
+    :param universal_taggable: Whether or not resource group tagging api can be used, in which case
+        we'll automatically register tag actions/filters. Note: values of True will register legacy
+        tag filters/actions, values of object() will just register current standard
+        tag/filters/actions.
+    :param global_resource: Denotes if this resource exists across all regions (iam, cloudfront,
+        r53)
+    :param metrics_namespace: Generally we utilize a service to namespace mapping in the metrics
+        filter. However some resources have a type specific namespace (ig. ebs)
+    :param id_prefix: Specific to ec2 service resources used to disambiguate a resource by its id
+
+    """
+
     # Required
-
-    # id field, should be the identifier used for apis
     id = None
-
-    # name field, used for display
     name = None
-
-    # which aws service (per sdk) has the api for this resource.
     service = None
-
-    # used to query the resource by describe-sources
     enum_spec = None
 
-    ###########
-    # Optional
-
-    ############
     # Permissions
-
-    # Permission string prefix if not service
     permission_prefix = None
-
-    # Permissions for resource enumeration/get. Normally we autogen
-    # but in some cases we need to specify statically
     permissions_enum = None
-
-    # Permissions for resourcee augment
     permissions_augment = None
 
-    ###########
     # Arn handling / generation metadata
-
-    # arn resource attribute, when describe format has arn
     arn = None
-
-    # type, used for arn construction, also required for universal tag augment
     arn_type = None
-
-    # how arn type is separated from rest of arn
     arn_separator = "/"
-
-    # for services that need custom labeling for arns
     arn_service = None
 
-    ##########
     # Resource retrieval
-
-    # filter_name, when fetching a single resource via enum_spec
-    # technically optional, but effectively required for serverless
-    # event policies else we have to enumerate the population.
     filter_name = None
-
-    # filter_type, scalar or list
     filter_type = None
-
-    # used to enrich the resource descriptions returned by enum_spec
     detail_spec = None
-
-    # used when the api supports getting resource details enmasse
     batch_detail_spec = None
 
-    ##########
     # Misc
-
-    # used for reporting, array of fields
     default_report_fields = ()
-
-    # date, latest date associated to resource, generally references
-    # either create date or modified date.
     date = None
-
-    # dimension, defines that resource has cloud watch metrics and the
-    # resource id can be passed as this value. further customizations
-    # of dimensions require subclass metrics filter.
     dimension = None
-
-    # AWS Cloudformation type
     cfn_type = None
-
-    # AWS Config Service resource type name
     config_type = None
-
-    # Whether or not resource group tagging api can be used, in which
-    # case we'll automatically register tag actions/filters.
-    #
-    # Note values of True will register legacy tag filters/actions, values
-    # of object() will just register current standard tag/filters/actions.
+    config_id = None
     universal_taggable = False
-
-    # Denotes if this resource exists across all regions (iam, cloudfront, r53)
     global_resource = False
-
-    # Generally we utilize a service to namespace mapping in the metrics filter
-    # however some resources have a type specific namespace (ig. ebs)
     metrics_namespace = None
-
-    # specific to ec2 service resources used to disambiguate a resource by its id
     id_prefix = None

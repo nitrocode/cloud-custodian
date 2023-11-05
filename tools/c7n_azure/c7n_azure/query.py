@@ -2,24 +2,26 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+
 try:
     from collections.abc import Iterable
 except ImportError:
     from collections import Iterable
 
-from c7n_azure.constants import DEFAULT_RESOURCE_AUTH_ENDPOINT
-from c7n_azure.actions.logic_app import LogicAppAction
 from azure.mgmt.resourcegraph.models import QueryRequest
-from c7n_azure.actions.notify import Notify
-from c7n_azure.filters import ParentFilter
-from c7n_azure.provider import resources
-
 from c7n.actions import ActionRegistry
 from c7n.exceptions import PolicyValidationError
 from c7n.filters import FilterRegistry
 from c7n.manager import ResourceManager
-from c7n.query import sources, MaxResourceLimit
+from c7n.query import MaxResourceLimit, sources
 from c7n.utils import local_session
+
+from c7n_azure.actions.logic_app import LogicAppAction
+from c7n_azure.actions.notify import Notify
+from c7n_azure.constants import DEFAULT_RESOURCE_AUTH_ENDPOINT
+from c7n_azure.filters import ParentFilter
+from c7n_azure.provider import resources
+from c7n_azure.utils import generate_key_vault_url, serialize
 
 log = logging.getLogger('custodian.azure.query')
 
@@ -29,7 +31,7 @@ class ResourceQuery:
     def __init__(self, session_factory):
         self.session_factory = session_factory
 
-    def filter(self, resource_manager, **params):
+    def filter(self, resource_manager, query=None, **params):
         m = resource_manager.resource_type
         enum_op, list_op, extra_args = m.enum_spec
 
@@ -40,6 +42,9 @@ class ResourceQuery:
 
         try:
             op = getattr(getattr(resource_manager.get_client(), enum_op), list_op)
+            if query:
+                params.update(**query[0])
+
             result = op(**params)
 
             if isinstance(result, Iterable):
@@ -76,7 +81,7 @@ class DescribeSource:
         pass
 
     def get_resources(self, query):
-        return self.query.filter(self.manager)
+        return self.query.filter(self.manager, query)
 
     def get_permissions(self):
         return ()
@@ -98,9 +103,6 @@ class ResourceGraphSource:
                 % self.manager.data['resource'])
 
     def get_resources(self, _):
-        log.warning('The Azure Resource Graph source '
-                    'should not be used in production scenarios at this time.')
-
         session = self.manager.get_session()
         client = session.client('azure.mgmt.resourcegraph.ResourceGraphClient')
 
@@ -131,7 +133,7 @@ class ChildResourceQuery(ResourceQuery):
     parents identifiers. ie. SQL and Cosmos databases
     """
 
-    def filter(self, resource_manager, **params):
+    def filter(self, resource_manager, query=None, **params):
         """Query a set of resources."""
         m = self.resolve(resource_manager.resource_type)  # type: ChildTypeInfo
 
@@ -141,7 +143,11 @@ class ChildResourceQuery(ResourceQuery):
         results = []
         for parent in parents.resources():
             try:
-                subset = resource_manager.enumerate_resources(parent, m, **params)
+                vault_url = None
+                if m.keyvault_child:
+                    vault_url = generate_key_vault_url(parent['name'])
+                subset = resource_manager.enumerate_resources(
+                    parent, m, vault_url=vault_url, **params)
 
                 if subset:
                     # If required, append parent resource ID to all child resources
@@ -156,7 +162,6 @@ class ChildResourceQuery(ResourceQuery):
                             .format(parent[parents.resource_type.id], e))
                 if m.raise_on_exception:
                     raise e
-
         return results
 
 
@@ -195,6 +200,7 @@ class ChildTypeInfo(TypeInfo, metaclass=TypeMeta):
     annotate_parent = True
     raise_on_exception = True
     parent_key = 'c7n:parent-id'
+    keyvault_child = False
 
     @classmethod
     def extra_args(cls, parent_resource):
@@ -219,8 +225,8 @@ class QueryResourceManager(ResourceManager, metaclass=QueryMeta):
     class resource_type(TypeInfo):
         pass
 
-    def __init__(self, data, options):
-        super(QueryResourceManager, self).__init__(data, options)
+    def __init__(self, ctx, data):
+        super(QueryResourceManager, self).__init__(ctx, data)
         self.source = self.get_source(self.source_type)
         self._session = None
 
@@ -238,11 +244,12 @@ class QueryResourceManager(ResourceManager, metaclass=QueryMeta):
             self._session = local_session(self.session_factory)
         return self._session
 
-    def get_client(self, service=None):
+    def get_client(self, service=None, vault_url=None):
         if not service:
             return self.get_session().client(
-                "%s.%s" % (self.resource_type.service, self.resource_type.client))
-        return self.get_session().client(service)
+                "%s.%s" % (self.resource_type.service, self.resource_type.client),
+                vault_url=vault_url)
+        return self.get_session().client(service, vault_url=vault_url)
 
     def get_cache_key(self, query):
         return {'source_type': self.source_type,
@@ -258,6 +265,9 @@ class QueryResourceManager(ResourceManager, metaclass=QueryMeta):
         return self.data.get('source', 'describe-azure')
 
     def resources(self, query=None, augment=True):
+        if self.data.get("query"):
+            query = self.data["query"]
+
         cache_key = self.get_cache_key(query)
 
         resources = None
@@ -276,6 +286,8 @@ class QueryResourceManager(ResourceManager, metaclass=QueryMeta):
                 with self.ctx.tracer.subsegment('resource-augment'):
                     resources = self.augment(resources)
             self._cache.save(cache_key, resources)
+
+        self._cache.close()
 
         with self.ctx.tracer.subsegment('filter'):
             resource_count = len(resources)
@@ -344,8 +356,8 @@ class ChildResourceManager(QueryResourceManager, metaclass=QueryMeta):
 
         return self._session
 
-    def enumerate_resources(self, parent_resource, type_info, **params):
-        client = self.get_client()
+    def enumerate_resources(self, parent_resource, type_info, vault_url=None, **params):
+        client = self.get_client(vault_url=vault_url)
 
         enum_op, list_op, extra_args = self.resource_type.enum_spec
 
@@ -366,7 +378,9 @@ class ChildResourceManager(QueryResourceManager, metaclass=QueryMeta):
         result = op(**params)
 
         if isinstance(result, Iterable):
-            return [r.serialize(True) for r in result]
+            # KeyVault items don't have `serialize` method now
+            return [(r.serialize(True) if hasattr(r, 'serialize') else serialize(r))
+                    for r in result]
         elif hasattr(result, 'value'):
             return [r.serialize(True) for r in result.value]
 

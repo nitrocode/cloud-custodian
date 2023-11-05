@@ -7,7 +7,7 @@ import time
 import click
 import requests
 from c7n_azure.policy import AzureFunctionMode
-from distutils.util import strtobool
+from c7n.vendored.distutils.util import strtobool
 from enum import Enum
 
 from c7n.config import Config
@@ -94,7 +94,7 @@ def cli(**kwargs):
             continue
         try:
             params = AzureFunctionMode(p).get_function_app_params()
-            creds = web_client.web_apps.list_publishing_credentials(
+            creds = web_client.web_apps.begin_list_publishing_credentials(
                 params.function_app_resource_group_name,
                 params.function_app_name).result()
             deployments[p.name] = {'scm_uri': creds.scm_uri, 'status': None}

@@ -15,13 +15,14 @@ from c7n.exceptions import PolicyValidationError
 from c7n.filters import ValueFilter, AgeFilter, Filter
 from c7n.filters.offhours import OffHour, OnHour
 import c7n.filters.vpc as net_filters
+import c7n.policy
 
 from c7n.manager import resources
 from c7n import query
 from c7n.resources.securityhub import PostFinding
 from c7n.tags import TagActionFilter, DEFAULT_TAG, TagCountFilter, TagTrim, TagDelayedAction
 from c7n.utils import (
-    local_session, type_schema, chunks, get_retry, select_keys)
+    FormatDate, local_session, type_schema, chunks, get_retry, select_keys)
 
 from .ec2 import deserialize_user_data
 
@@ -244,7 +245,7 @@ class ConfigValidFilter(Filter):
                       'app-elb-target-group', 'ebs-snapshot', 'ami')]))
 
     def validate(self):
-        if self.manager.data.get('mode'):
+        if isinstance(self.manager.ctx.policy.get_execution_mode(), c7n.policy.LambdaMode):
             raise PolicyValidationError(
                 "invalid-config makes too many queries to be run in lambda")
         return self
@@ -602,12 +603,13 @@ class ImageFilter(ValueFilter):
         return super(ImageFilter, self).process(asgs, event)
 
     def __call__(self, i):
-        image = self.images.get(self.launch_info.get(i).get('ImageId', None))
+        image_id = self.launch_info.get(i).get('ImageId', None)
+        image = self.images.get(image_id)
         # Finally, if we have no image...
         if not image:
             self.log.warning(
-                "Could not locate image for instance:%s ami:%s" % (
-                    i['InstanceId'], i["ImageId"]))
+                "Could not locate image for asg:%s ami:%s" % (
+                    i['AutoScalingGroupName'], image_id ))
             # Match instead on empty skeleton?
             return False
         return self.match(image)
@@ -994,7 +996,7 @@ class Resize(Action):
                             # unless we were given a new value for min_size then
                             # ensure it is at least as low as current_size
                             update['MinSize'] = min(current_size, a['MinSize'])
-                    elif type(self.data['desired-size']) == int:
+                    elif isinstance(self.data['desired-size'], int):
                         update['DesiredCapacity'] = self.data['desired-size']
 
             if update:
@@ -1146,6 +1148,8 @@ class Tag(Action):
         tags = self.get_tag_set()
         error = None
 
+        self.interpolate_values(tags)
+
         client = self.get_client()
         with self.executor_factory(max_workers=2) as w:
             futures = {}
@@ -1178,6 +1182,14 @@ class Tag(Action):
                 tag_params.append(atags)
                 a.setdefault('Tags', []).append(atags)
         self.manager.retry(client.create_or_update_tags, Tags=tag_params)
+
+    def interpolate_values(self, tags):
+        params = {
+            'account_id': self.manager.config.account_id,
+            'now': FormatDate.utcnow(),
+            'region': self.manager.config.region}
+        for t in tags:
+            t['Value'] = t['Value'].format(**params)
 
     def get_client(self):
         return local_session(self.manager.session_factory).client('autoscaling')
@@ -1241,7 +1253,7 @@ class PropagateTags(Action):
                 k: v for k, v in tag_map.items()
                 if k in self.data['tags']}
 
-        if not tag_map and not self.get('trim', False):
+        if not tag_map and not self.data.get('trim', False):
             self.log.error(
                 'No tags found to propagate on asg:{} tags configured:{}'.format(
                     asg['AutoScalingGroupName'], self.data.get('tags')))
@@ -1391,7 +1403,7 @@ class RenameTag(Action):
              'PropagateAtLaunch': propagate,
              'Key': destination_tag,
              'Value': source['Value']}])
-        if propagate:
+        if propagate and asg['Instances']:
             self.propagate_instance_tag(source, destination_tag, asg)
 
     def propagate_instance_tag(self, source, destination_tag, asg):
@@ -1528,6 +1540,7 @@ class Suspend(Action):
             retry(ec2_client.stop_instances, InstanceIds=instance_ids)
         except ClientError as e:
             if e.response['Error']['Code'] in (
+                    'UnsupportedOperation',
                     'InvalidInstanceID.NotFound',
                     'IncorrectInstanceState'):
                 self.log.warning("Erroring stopping asg instances %s %s" % (
@@ -1657,6 +1670,93 @@ class Delete(Action):
             if e.response['Error']['Code'] == 'ValidationError':
                 return
             raise
+
+
+@ASG.action_registry.register('update')
+class Update(Action):
+    """Action to update ASG configuration settings
+
+    :example:
+
+    .. code-block:: yaml
+
+            policies:
+              - name: set-asg-instance-lifetime
+                resource: asg
+                filters:
+                  - MaxInstanceLifetime: empty
+                actions:
+                  - type: update
+                    max-instance-lifetime: 604800  # (7 days)
+
+              - name: set-asg-by-policy
+                resource: asg
+                actions:
+                  - type: update
+                    default-cooldown: 600
+                    max-instance-lifetime: 0      # (clear it)
+                    new-instances-protected-from-scale-in: true
+                    capacity-rebalance: true
+    """
+
+    schema = type_schema(
+        'update',
+        **{
+            'default-cooldown': {'type': 'integer', 'minimum': 0},
+            'max-instance-lifetime': {
+                "anyOf": [
+                    {'enum': [0]},
+                    {'type': 'integer', 'minimum': 86400}
+                ]
+            },
+            'new-instances-protected-from-scale-in': {'type': 'boolean'},
+            'capacity-rebalance': {'type': 'boolean'},
+        }
+    )
+    permissions = ("autoscaling:UpdateAutoScalingGroup",)
+    settings_map = {
+        "default-cooldown": "DefaultCooldown",
+        "max-instance-lifetime": "MaxInstanceLifetime",
+        "new-instances-protected-from-scale-in": "NewInstancesProtectedFromScaleIn",
+        "capacity-rebalance": "CapacityRebalance"
+    }
+
+    def validate(self):
+        if not set(self.settings_map).intersection(set(self.data)):
+            raise PolicyValidationError(
+                "At least one setting must be specified from: " +
+                ", ".join(sorted(self.settings_map))
+            )
+        return self
+
+    def process(self, asgs):
+        client = local_session(self.manager.session_factory).client('autoscaling')
+
+        settings = {}
+        for k, v in self.settings_map.items():
+            if k in self.data:
+                settings[v] = self.data.get(k)
+
+        with self.executor_factory(max_workers=2) as w:
+            futures = {}
+            error = None
+            for a in asgs:
+                futures[w.submit(self.process_asg, client, a, settings)] = a
+            for f in as_completed(futures):
+                if f.exception():
+                    self.log.error("Error while updating asg:%s error:%s" % (
+                        futures[f]['AutoScalingGroupName'],
+                        f.exception()))
+                    error = f.exception()
+            if error:
+                # make sure we stop policy execution if there were errors
+                raise error
+
+    def process_asg(self, client, asg, settings):
+        self.manager.retry(
+            client.update_auto_scaling_group,
+            AutoScalingGroupName=asg['AutoScalingGroupName'],
+            **settings)
 
 
 @resources.register('launch-config')

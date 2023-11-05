@@ -4,7 +4,7 @@ import os
 import re
 import pytest
 
-from distutils.util import strtobool
+from c7n.vendored.distutils.util import strtobool
 from .constants import ACCOUNT_ID
 
 try:
@@ -25,6 +25,8 @@ except ImportError: # noqa
     class LazyPluginCacheDir:
         pass
 
+
+pytest_plugins = ("pytest_recording",)
 
 # If we have C7N_FUNCTIONAL make sure Replay is False otherwise enable Replay
 LazyReplay.value = not strtobool(os.environ.get('C7N_FUNCTIONAL', 'no'))

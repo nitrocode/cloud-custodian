@@ -1,14 +1,11 @@
 # Copyright The Cloud Custodian Authors.
 # SPDX-License-Identifier: Apache-2.0
-import azure.keyvault.http_bearer_challenge_cache as kv_cache
 from ..azure_common import BaseTest, arm_template
-
 
 class KeyVaultKeyTest(BaseTest):
 
     def tearDown(self, *args, **kwargs):
         super(KeyVaultKeyTest, self).tearDown(*args, **kwargs)
-        kv_cache._cache = {}
 
     def test_key_vault_keys_schema_validate(self):
         p = self.load_policy({
@@ -66,3 +63,16 @@ class KeyVaultKeyTest(BaseTest):
         resources = p.run()
         self.assertEqual(len(resources), 1)
         self.assertTrue(resources[0]['c7n:kty'].lower(), 'rsa')
+
+    def test_key_vault_keys_rotation(self):
+        p = self.load_policy({
+            'name': 'test-key-vault',
+            'resource': 'azure.keyvault-key',
+            'filters': [
+                {'type': 'rotation-policy',
+                 'state': 'Disabled'
+                }
+            ]
+        }, validate=True, cache=True)
+        resources = p.run()
+        self.assertEqual(len(resources), 1)

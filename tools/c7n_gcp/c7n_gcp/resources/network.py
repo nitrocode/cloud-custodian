@@ -6,7 +6,8 @@ from c7n_gcp.actions import MethodAction
 from c7n_gcp.query import QueryResourceManager, TypeInfo
 
 from c7n_gcp.provider import resources
-from c7n.utils import type_schema
+from c7n.filters.core import ListItemFilter
+from c7n.utils import type_schema, local_session
 
 
 @resources.register('vpc')
@@ -23,6 +24,35 @@ class Network(QueryResourceManager):
             "name", "description", "creationTimestamp",
             "autoCreateSubnetworks", "IPv4Range", "gatewayIPv4"]
         asset_type = "compute.googleapis.com/Network"
+        scc_type = "google.compute.Network"
+        urn_component = "vpc"
+
+        @staticmethod
+        def get(client, resource_info):
+            path_param_re = re.compile('.*?/projects/(.*?)/global/networks/(.*)')
+            project, network = path_param_re.match(
+                resource_info["resourceName"]).groups()
+            return client.execute_query(
+                'get', {'project': project, 'network': network})
+
+
+@Network.filter_registry.register('firewall')
+class VPCFirewallFilter(ListItemFilter):
+    schema = type_schema(
+        'firewall',
+        attrs={'$ref': '#/definitions/filters_common/list_item_attrs'}
+    )
+    annotate_items = True
+    permissions = ("vpcaccess.locations.list",)
+
+    def get_item_values(self, resource):
+        session = local_session(self.manager.session_factory)
+        client = session.client(service_name='compute', version='v1',
+                                component='networks')
+        project = session.get_default_project()
+        firewalls = client.execute_query('getEffectiveFirewalls', {
+            'project': project, 'network': resource['name']}).get('firewalls')
+        return firewalls
 
 
 @resources.register('subnet')
@@ -39,13 +69,19 @@ class Subnet(QueryResourceManager):
             "name", "description", "creationTimestamp", "ipCidrRange",
             "gatewayAddress", "region", "state"]
         asset_type = "compute.googleapis.com/Subnetwork"
+        scc_type = "google.compute.Subnetwork"
+        metric_key = "resource.labels.subnetwork_name"
+        urn_component = "subnet"
 
         @staticmethod
         def get(client, resource_info):
+
+            path_param_re = re.compile(
+                '.*?projects/(.*?)/regions/(.*?)/subnetworks/(.*)')
+            project, region, subnet = path_param_re.match(
+                resource_info["resourceName"]).groups()
             return client.execute_query(
-                'get', {'project': resource_info['project_id'],
-                        'region': resource_info['location'],
-                        'subnetwork': resource_info['subnetwork_name']})
+                'get', {'project': project, 'region': region, 'subnetwork': subnet})
 
 
 class SubnetAction(MethodAction):
@@ -85,9 +121,14 @@ class SetFlowLog(SubnetAction):
 
     def get_resource_params(self, m, r):
         params = super(SetFlowLog, self).get_resource_params(m, r)
-        params['body'] = dict(r)
-        params['body']['enableFlowLogs'] = self.data.get('state', True)
-        return params
+        return {
+            'project': params['project'],
+            'region': params['region'],
+            'subnetwork': params['subnetwork'],
+            'body': {
+                'fingerprint': r['fingerprint'],
+                'enableFlowLogs': self.data.get('state', True)}
+        }
 
 
 @Subnet.action_registry.register('set-private-api')
@@ -117,8 +158,11 @@ class Firewall(QueryResourceManager):
         name = id = "name"
         default_report_fields = [
             name, "description", "network", "priority", "creationTimestamp",
-            "logConfig.enabled", "disabled"]
+            "logConfig.enable", "disabled"]
         asset_type = "compute.googleapis.com/Firewall"
+        scc_type = "google.compute.Firewall"
+        metric_key = 'metric.labels.firewall_name'
+        urn_component = "firewall"
 
         @staticmethod
         def get(client, resource_info):
@@ -126,6 +170,27 @@ class Firewall(QueryResourceManager):
                 'get', {'project': resource_info['project_id'],
                         'firewall': resource_info['resourceName'].rsplit('/', 1)[-1]})
 
+    def augment(self, resources):
+        def get_port_ranges(ports):
+            port_ranges = []
+            for port in ports:
+                    if "-" in port:
+                        port_split = port.split("-")
+                        port_ranges.append({"beginPort": port_split[0], "endPort": port_split[1]})
+                    else:
+                        port_ranges.append({"beginPort": port, "endPort": port})
+            return port_ranges
+
+        if not resources:
+            return []
+        for r_index, r in enumerate(resources):
+            action = "allowed" if "allowed" in r else "denied"
+            for protocol_index, protocol in enumerate(r[action]):
+                if "ports" in protocol:
+                    protocol['portRanges']=get_port_ranges(protocol['ports'])
+                    r[action][protocol_index] = protocol
+            resources[r_index] = r
+        return resources
 
 @Firewall.action_registry.register('delete')
 class DeleteFirewall(MethodAction):
@@ -158,6 +223,53 @@ class DeleteFirewall(MethodAction):
         return {'project': project, 'firewall': resource_name}
 
 
+@Firewall.action_registry.register('modify')
+class ModifyFirewall(MethodAction):
+    """Modify filtered Firewall Rules
+
+    :example: Enable logging on filtered firewalls
+
+    .. yaml:
+
+     policies:
+       - name: enable-firewall-logging
+         resource: gcp.firewall
+         filters:
+         - type: value
+           key: name
+           value: no-logging
+         actions:
+         - type: modify
+           logConfig:
+             enabled: true
+    """
+
+    schema = type_schema(
+        'modify',
+        **{'description': {'type': 'string'},
+           'network': {'type': 'string'},
+           'priority': {'type': 'number'},
+           'sourceRanges': {'type': 'array', 'items': {'type': 'string'}},
+           'destinationRanges': {'type': 'array', 'items': {'type': 'string'}},
+           'sourceTags': {'type': 'array', 'items': {'type': 'string'}},
+           'targetTags': {'type': 'array', 'items': {'type': 'string'}},
+           'sourceServiceAccounts': {'type': 'array', 'items': {'type': 'string'}},
+           'targetServiceAccounts': {'type': 'array', 'items': {'type': 'string'}},
+           'allowed': {'type': 'array', 'items': {'type': 'object'}},
+           'denied': {'type': 'array', 'items': {'type': 'object'}},
+           'direction': {'enum': ['INGRESS', 'EGRESS']},
+           'logConfig': {'type': 'object'},
+           'disabled': {'type': 'boolean'}})
+    method_spec = {'op': 'patch'}
+    permissions = ('compute.networks.updatePolicy', 'compute.firewalls.update')
+    path_param_re = re.compile('.*?/projects/(.*?)/global/firewalls/(.*)')
+
+    def get_resource_params(self, m, r):
+        project, resource_name = self.path_param_re.match(
+            r['selfLink']).groups()
+        return {'project': project, 'firewall': resource_name, 'body': self.data}
+
+
 @resources.register('router')
 class Router(QueryResourceManager):
     """GCP resource: https://cloud.google.com/compute/docs/reference/rest/v1/routers
@@ -171,6 +283,7 @@ class Router(QueryResourceManager):
         default_report_fields = [
             "name", "description", "creationTimestamp", "region", "network"]
         asset_type = "compute.googleapis.com/Router"
+        urn_component = "router"
 
         @staticmethod
         def get(client, resource_info):
@@ -222,6 +335,7 @@ class Route(QueryResourceManager):
         default_report_fields = [
             "name", "description", "creationTimestamp", "network", "priority", "destRange"]
         asset_type = "compute.googleapis.com/Route"
+        urn_component = "route"
 
         @staticmethod
         def get(client, resource_info):

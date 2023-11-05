@@ -20,19 +20,19 @@ class ComputeEnvironment(QueryResourceManager):
         arn_type = "compute-environment"
         enum_spec = (
             'describe_compute_environments', 'computeEnvironments', None)
-        cfn_type = 'AWS::Batch::ComputeEnvironment'
+        cfn_type = config_type = 'AWS::Batch::ComputeEnvironment'
 
 
 @ComputeEnvironment.filter_registry.register('security-group')
 class ComputeSGFilter(SecurityGroupFilter):
 
-    RelatedIdsExpression = "computeResources.securityGroupIds"
+    RelatedIdsExpression = "computeResources.securityGroupIds[]"
 
 
 @ComputeEnvironment.filter_registry.register('subnet')
 class ComputeSubnetFilter(SubnetFilter):
 
-    RelatedIdsExpression = "computeResources.subnets"
+    RelatedIdsExpression = "computeResources.subnets[]"
 
 
 @resources.register('batch-definition')
@@ -180,4 +180,4 @@ class BatchJobQueue(QueryResourceManager):
         arn_type = 'job-queue'
         enum_spec = (
             'describe_job_queues', 'jobQueues', None)
-        cfn_type = 'AWS::Batch::JobQueue'
+        cfn_type = config_type = 'AWS::Batch::JobQueue'
