@@ -20,6 +20,7 @@ from .common import BaseTest
 import pytest
 from pytest_terraform import terraform
 
+
 # this one doesn't work as a functional test as it enables stop protection, which prevents
 # the terraform teardown, we would need to also remove the stop protection in the test.
 @terraform('ec2_stop_protection_enabled')
@@ -586,6 +587,25 @@ class TestVolumeFilter(BaseTest):
 
 
 class TestResizeInstance(BaseTest):
+
+    def test_ec2_resize_cost_hub(self):
+        factory = self.replay_flight_data("test_ec2_costhub_resize", region="us-east-2")
+        policy = self.load_policy(
+            {"name": "ec2-hub-resize",
+             "resource": "ec2",
+             "filters": ["cost-optimization"],
+             "actions": ["resize"]},
+            config={"region": "us-east-2"},
+            session_factory=factory
+        )
+
+        client = factory().client('ec2', region_name='us-east-2')
+        resources = policy.run()
+        assert len(resources) == 1
+        instances = utils.query_instances(
+            None, client=client, InstanceIds=[r["InstanceId"] for r in resources]
+        )
+        assert resources[0]["InstanceType"] != instances[0]["InstanceType"]
 
     def test_ec2_resize(self):
         # preconditions - three instances (2 m4.4xlarge, 1 m4.1xlarge)
@@ -2088,6 +2108,7 @@ class TestModifySecurityGroupAction(BaseTest):
                 client.describe_instances(InstanceIds=["i-08797f38d2e80c9d0"])),
             ['sg-0cba7a01d343d5c65', 'sg-02e14ba7dd2dbe44b', 'sg-0e630ac9094eff5c5'])
 
+
 class TestAutoRecoverAlarmAction(BaseTest):
 
     def test_autorecover_alarm(self):
@@ -2381,3 +2402,19 @@ class TestEc2HasSpecificManagedPolicyFilter(BaseTest):
         )
         resources = p.run()
         self.assertEqual(len(resources), 1)
+
+
+class TestCapacityReservation(BaseTest):
+
+    def test_capacity_reservation_query(self):
+        factory = self.replay_flight_data('test_ec2_capacity_reservation_query')
+        p = self.load_policy(
+                {
+                    'name': 'list-ec2-capacity-reservation',
+                    'resource': 'aws.ec2-capacity-reservation'
+                },
+                session_factory=factory,
+                config={'region': 'ap-southeast-1'}
+            )
+        resources = p.run()
+        self.assertEqual(len(resources), 2)

@@ -720,6 +720,7 @@ class SubnetIpAddressUsageFilter(ValueFilter):
                 results.append(r)
         return results
 
+
 class ConfigSG(query.ConfigSource):
 
     def load_resource(self, item):
@@ -924,7 +925,7 @@ class SecurityGroupPatch:
                 client.create_tags, Resources=[group['GroupId']], Tags=tags)
 
     def process_rules(self, client, rule_type, group, delta):
-        key, revoke_op, auth_op = self.RULE_TYPE_MAP[rule_type]
+        _, revoke_op, auth_op = self.RULE_TYPE_MAP[rule_type]
         revoke, authorize = getattr(
             client, revoke_op), getattr(client, auth_op)
 
@@ -2036,6 +2037,47 @@ class DeleteNetworkInterface(BaseAction):
                     raise
 
 
+@NetworkInterface.action_registry.register('detach')
+class DetachNetworkInterface(BaseAction):
+    """Detach a network interface from an EC2 instance.
+
+    :example:
+
+    .. code-block:: yaml
+
+        policies:
+          - name: detach-enis
+            comment: Detach ENIs attached to EC2 with public IP addresses
+            resource: eni
+            filters:
+              - type: value
+                key: Attachment.InstanceId
+                value: present
+              - type: value
+                key: Association.PublicIp
+                value: present
+            actions:
+              - type: detach
+    """
+    permissions = ('ec2:DetachNetworkInterface',)
+    schema = type_schema('detach')
+
+    def process(self, resources):
+        client = local_session(self.manager.session_factory).client('ec2')
+        att_resources = [ar for ar in resources if ('Attachment' in ar
+            and ar['Attachment'].get('InstanceId')
+            and ar['Attachment'].get('DeviceIndex') != 0)]
+        if att_resources and (len(att_resources) < len(resources)):
+            self.log.warning(
+                "Filtered {} of {} non-primary network interfaces attatched to EC2".format(
+                len(att_resources), len(resources))
+            )
+        elif not att_resources:
+            self.log.warning("No non-primary EC2 interfaces indentified - revise c7n filters")
+        for r in att_resources:
+            client.detach_network_interface(AttachmentId=r['Attachment']['AttachmentId'])
+
+
 @resources.register('route-table')
 class RouteTable(query.QueryResourceManager):
 
@@ -2444,6 +2486,40 @@ class AddressRelease(BaseAction):
                     raise
 
 
+@NetworkAddress.action_registry.register('disassociate')
+class DisassociateAddress(BaseAction):
+    """Disassociate elastic IP addresses from resources without releasing them.
+
+    :example:
+
+    .. code-block:: yaml
+
+            policies:
+              - name: disassociate-network-addr
+                resource: network-addr
+                filters:
+                  - AllocationId: ...
+                actions:
+                  - type: disassociate
+    """
+
+    schema = type_schema('disassociate')
+    permissions = ('ec2:DisassociateAddress',)
+
+    def process(self, network_addrs):
+        client = local_session(self.manager.session_factory).client('ec2')
+        assoc_addrs = [addr for addr in network_addrs if 'AssociationId' in addr]
+
+        for aa in assoc_addrs:
+            try:
+                client.disassociate_address(AssociationId=aa['AssociationId'])
+            except ClientError as e:
+                # If its already been diassociated ignore, else raise.
+                if not (e.response['Error']['Code'] == 'InvalidAssocationID.NotFound' and
+                       aa['AssocationId'] in e.response['Error']['Message']):
+                    raise e
+
+
 @resources.register('customer-gateway')
 class CustomerGateway(query.QueryResourceManager):
 
@@ -2626,7 +2702,6 @@ class EndpointPolicyStatementFilter(HasStatementFilter):
         }
 
 
-
 @VpcEndpoint.filter_registry.register('cross-account')
 class EndpointCrossAccountFilter(CrossAccountAccessFilter):
 
@@ -2766,13 +2841,14 @@ class UnusedKeyPairs(Filter):
 
     def _pull_ec2_keynames(self):
         ec2_manager = self.manager.get_resource_manager('ec2')
-        return {i.get('KeyName',None) for i in ec2_manager.resources()}
+        return {i.get('KeyName', None) for i in ec2_manager.resources()}
 
     def process(self, resources, event=None):
         keynames = self._pull_ec2_keynames().union(self._pull_asg_keynames())
         if self.data.get('state', True):
             return [r for r in resources if r['KeyName'] not in keynames]
         return [r for r in resources if r['KeyName'] in keynames]
+
 
 @KeyPair.action_registry.register('delete')
 class DeleteUnusedKeyPairs(BaseAction):

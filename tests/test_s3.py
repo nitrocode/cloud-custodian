@@ -36,6 +36,20 @@ from .common import (
 )
 
 
+def test_s3_express(test):
+    session_factory = test.replay_flight_data('test_s3_express')
+    p = test.load_policy(
+        {'name': 's3-xpress',
+         'resource': 's3-directory'},
+        config={'account_id': '644160558196', 'region': 'us-east-1'},
+        session_factory=session_factory)
+    resources = p.run()
+    assert len(resources) ==  1
+    assert p.resource_manager.get_arns(resources) == [
+        'arn:aws:s3express:us-east-1:644160558196:bucket/test-zone--use1-az4--x-s3'
+    ]
+
+
 @pytest.mark.audited
 @terraform('s3_tag')
 def test_s3_tag(test, s3_tag):
@@ -4056,7 +4070,6 @@ class IntelligentTieringConfiguration(BaseTest):
         self.assertIn(
             "may only be used in conjunction with `intelligent-tiering`", str(e.exception))
 
-
     def test_s3_int_tiering_set_configurations(self):
         self.patch(s3.S3, "executor_factory", MainThreadExecutor)
         self.patch(s3, "S3_AUGMENT_TABLE", [])
@@ -4065,7 +4078,7 @@ class IntelligentTieringConfiguration(BaseTest):
         session = session_factory()
         client = session.client("s3")
         configs = client.list_bucket_intelligent_tiering_configurations(Bucket=bname)
-        filtered_config =  {
+        filtered_config = {
             'Id': 'test-config',
             'Filter': {'And': {'Prefix': 'test', 'Tags': [{'Key': 'Owner', 'Value': 'c7n'}]}},
             'Status': 'Enabled',
@@ -4156,7 +4169,7 @@ class IntelligentTieringConfiguration(BaseTest):
         ids = []
         configs = client.list_bucket_intelligent_tiering_configurations(
             Bucket=bname).get('IntelligentTieringConfigurationList')
-        self.assertEquals(len(configs), 2)
+        self.assertEqual(len(configs), 2)
         for config in configs:
             ids.append(jmespath_search("Id", config))
         self.assertTrue("c7n-default" in ids)
@@ -4187,7 +4200,7 @@ class IntelligentTieringConfiguration(BaseTest):
         self.assertEqual(resources[0].get("c7n:ListItemMatches")[0].get("Id"), "c7n-default")
         check_config = client.list_bucket_intelligent_tiering_configurations(
             Bucket=bname).get('IntelligentTieringConfigurationList')
-        self.assertEquals(len(check_config), 1)
+        self.assertEqual(len(check_config), 1)
         self.assertFalse('c7n-default' in check_config[0].get('Id'))
 
     def test_delete_int_tier_config_not_present(self):
@@ -4199,7 +4212,7 @@ class IntelligentTieringConfiguration(BaseTest):
         client = session.client("s3")
         config = client.list_bucket_intelligent_tiering_configurations(
             Bucket=bname).get('IntelligentTieringConfigurationList')
-        self.assertEquals(len(config), 1)
+        self.assertEqual(len(config), 1)
         id = config[0].get('Id')
         self.assertTrue("present" in id)
         log_output = self.capture_logging('custodian.s3', level=logging.WARNING)
@@ -4227,7 +4240,7 @@ class IntelligentTieringConfiguration(BaseTest):
         self.assertEqual(len(resources), 1)
         check_config = client.list_bucket_intelligent_tiering_configurations(
             Bucket=bname).get('IntelligentTieringConfigurationList')
-        self.assertEquals(len(check_config), 1)
+        self.assertEqual(len(check_config), 1)
         self.assertTrue('present' in check_config[0].get('Id'))
         self.assertIn(
           'No such configuration found:example-abc-123 while deleting '
@@ -4377,7 +4390,7 @@ class BucketReplication(BaseTest):
                                 "And": {
                                     "Prefix": "abc", "Tags": [{"Key": "Owner", "Value": "c7n"}]}}},
                             {"DestinationRegion": "us-west-2"},
-                            {"CrossRegion": True }
+                            {"CrossRegion": True}
                             ]
                         }
                     ],
@@ -4419,7 +4432,7 @@ class BucketReplication(BaseTest):
         ):
             resources = p.run()
             self.assertEqual(len(resources), 1)
-            self.assertEqual(resources[0]['Name'],'custodian-replication-test-1')
+            self.assertEqual(resources[0]['Name'], 'custodian-replication-test-1')
 
     def test_s3_bucket_no_replication_rule(self):
         self.patch(s3.S3, "executor_factory", MainThreadExecutor)
@@ -4447,8 +4460,7 @@ class BucketReplication(BaseTest):
         ):
             resources = p.run()
             self.assertEqual(len(resources), 1)
-            self.assertEqual(resources[0]['Name'],'custodian-replication-west')
-
+            self.assertEqual(resources[0]['Name'], 'custodian-replication-west')
 
     def test_s3_bucket_key_enabled(self):
         self.patch(s3.S3, "executor_factory", MainThreadExecutor)
@@ -4478,7 +4490,6 @@ class BucketReplication(BaseTest):
         resources = p.run()
         self.assertEqual(len(resources), 1)
 
-
     def test_s3_bucket_key_disabled(self):
         self.patch(s3.S3, "executor_factory", MainThreadExecutor)
         self.patch(s3.BucketEncryption, "executor_factory", MainThreadExecutor)
@@ -4506,7 +4517,6 @@ class BucketReplication(BaseTest):
         )
         resources = p.run()
         self.assertEqual(len(resources), 1)
-
 
     def test_bucket_encryption_invalid(self):
         self.assertRaises(

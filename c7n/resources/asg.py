@@ -36,6 +36,7 @@ class ASG(query.QueryResourceManager):
         arn_type = 'autoScalingGroup'
         arn_separator = ":"
         id = name = 'AutoScalingGroupName'
+        config_id = 'AutoScalingGroupARN'
         date = 'CreatedTime'
         dimension = 'AutoScalingGroupName'
         enum_spec = ('describe_auto_scaling_groups', 'AutoScalingGroups', None)
@@ -43,6 +44,7 @@ class ASG(query.QueryResourceManager):
         filter_type = 'list'
         config_type = 'AWS::AutoScaling::AutoScalingGroup'
         cfn_type = 'AWS::AutoScaling::AutoScalingGroup'
+        permissions_augment = ("autoscaling:DescribeTags",)
 
         default_report_fields = (
             'AutoScalingGroupName',
@@ -609,7 +611,7 @@ class ImageFilter(ValueFilter):
         if not image:
             self.log.warning(
                 "Could not locate image for asg:%s ami:%s" % (
-                    i['AutoScalingGroupName'], image_id ))
+                    i['AutoScalingGroupName'], image_id))
             # Match instead on empty skeleton?
             return False
         return self.match(image)
@@ -1495,7 +1497,8 @@ class Suspend(Action):
         "AZRebalance",
         "AlarmNotification",
         "ScheduledActions",
-        "AddToLoadBalancer"]
+        "AddToLoadBalancer",
+        "InstanceRefresh"]
 
     schema = type_schema(
         'suspend',
@@ -1572,7 +1575,15 @@ class Resume(Action):
                     delay: 300
 
     """
-    schema = type_schema('resume', delay={'type': 'number'})
+    ASG_PROCESSES = Suspend.ASG_PROCESSES
+    schema = type_schema(
+        'resume',
+        exclude={
+            'type': 'array',
+            'title': 'ASG Processes to not resume',
+            'items': {'enum': list(ASG_PROCESSES)}},
+        delay={'type': 'number'})
+
     permissions = ("autoscaling:ResumeProcesses", "ec2:StartInstances")
 
     def process(self, asgs):
@@ -1623,8 +1634,12 @@ class Resume(Action):
     def resume_asg(self, asg_client, asg):
         """Resume asg processes.
         """
+        processes = list(self.ASG_PROCESSES.difference(
+            self.data.get('exclude', ())))
+
         self.manager.retry(
             asg_client.resume_processes,
+            ScalingProcesses=processes,
             AutoScalingGroupName=asg['AutoScalingGroupName'])
 
 
@@ -1876,7 +1891,7 @@ class ScalingPolicy(query.QueryResourceManager):
         )
         filter_name = 'PolicyNames'
         filter_type = 'list'
-        cfn_type = 'AWS::AutoScaling::ScalingPolicy'
+        config_type = cfn_type = 'AWS::AutoScaling::ScalingPolicy'
 
 
 @ASG.filter_registry.register('scaling-policy')
