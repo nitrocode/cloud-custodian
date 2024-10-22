@@ -10,6 +10,7 @@ from unittest import mock
 from botocore.exceptions import ClientError
 from dateutil.parser import parse as parse_date
 
+from c7n import query
 from c7n import utils
 from c7n.config import Config
 from .common import BaseTest
@@ -574,6 +575,40 @@ class UtilTest(BaseTest):
         res = utils.get_support_region(mock_manager)
         self.assertEqual("cn-north-1", res)
 
+    def test_get_resource_tagging_region(self):
+
+        resource_type = query.TypeInfo()
+
+        # Regional endpoint checks
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                           'us-east-2'), 'us-east-2')
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                           'ap-southeast-1'), 'ap-southeast-1')
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                           'eu-west-1'), 'eu-west-1')
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                           'us-gov-east-1'), 'us-gov-east-1')
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                           'cn-north-1'), 'cn-north-1')
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                           'us-iso-east-1'), 'us-iso-east-1')
+
+        # Global resource checks
+        resource_type.global_resource = True
+
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                           'us-east-2'), 'us-east-1')
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                           'us-gov-east-1'), 'us-gov-west-1')
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                           'cn-north-1'), 'cn-north-1')
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                           'us-iso-east-1'), 'us-iso-east-1')
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                           'ap-southeast-1'), 'us-east-1')
+        self.assertEqual(utils.get_resource_tagging_region(resource_type,
+                                                              'eu-west-1'), 'us-east-1')
+
     def test_get_eni_resource_type(self):
         self.assertEqual(
             utils.get_eni_resource_type(
@@ -711,3 +746,18 @@ def test_jmespath_parse_split():
         {'foo': {'bar': 'abc.xyz'}}
     )
     assert result == ['abc', 'xyz']
+
+
+def test_jmespath_parse_to_json():
+    result = utils.jmespath_search(
+        'from_json(foo).bar',
+        {'foo': '{"bar": "abc.xyz"}'}
+    )
+    assert result == 'abc.xyz'
+
+    # bad json comes in = return null
+    result = utils.jmespath_search(
+        'from_json(foo).bar',
+        {'foo': '{"]}'}
+    )
+    assert result is None
