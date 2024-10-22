@@ -259,6 +259,12 @@ class User(QueryResourceManager):
         global_resource = True
         arn = 'Arn'
         config_id = 'UserId'
+        default_report_fields = (
+            'AccessKey0Active',
+            'AccessKey0LastUsed',
+            'AccessKey1Active',
+            'AccessKey1LastUsed',
+        )
 
     source_mapping = {
         'describe': DescribeUser,
