@@ -1976,6 +1976,108 @@ class IamInlinePolicyUsage(BaseTest):
         self.assertEqual(len(resources), 1)
         self.assertFalse(resources[0]["c7n:InlinePolicies"])
 
+    def test_iam_role_set_inline_policy_put(self):
+        session_factory = self.replay_flight_data("test_iam_role_set_inline_policy_put")
+        p = self.load_policy(
+            {
+                "name": "iam-role-set-inline-policy-put",
+                "resource": "aws.iam-role",
+                "filters": [
+                    {"type": "value", "key": "RoleName", "value": "MyServiceRole"}
+                ],
+                "actions": [
+                    {
+                        "type": "set-inline-policy",
+                        "state": "put",
+                        "name": "AllowSSM",
+                        "policy": [
+                            {
+                                "Sid": "AllowSSM",
+                                "Effect": "Allow",
+                                "Action": ["ssm:UpdateInstanceInformation"],
+                                "Resource": "*",
+                            }
+                        ],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["RoleName"], "MyServiceRole")
+
+    def test_iam_role_set_inline_policy_delete(self):
+        session_factory = self.replay_flight_data("test_iam_role_set_inline_policy_delete")
+        p = self.load_policy(
+            {
+                "name": "iam-role-set-inline-policy-delete",
+                "resource": "aws.iam-role",
+                "filters": [
+                    {"type": "value", "key": "RoleName", "value": "MyServiceRole"}
+                ],
+                "actions": [
+                    {
+                        "type": "set-inline-policy",
+                        "state": "delete",
+                        "name": "AllowSSM",
+                    }
+                ],
+            },
+            session_factory=session_factory,
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["RoleName"], "MyServiceRole")
+
+    def test_iam_role_set_inline_policy_delete_all(self):
+        session_factory = self.replay_flight_data(
+            "test_iam_role_set_inline_policy_delete_all"
+        )
+        p = self.load_policy(
+            {
+                "name": "iam-role-set-inline-policy-delete-all",
+                "resource": "aws.iam-role",
+                "filters": [
+                    {"type": "value", "key": "RoleName", "value": "MyServiceRole"}
+                ],
+                "actions": [
+                    {
+                        "type": "set-inline-policy",
+                        "state": "delete",
+                        "name": "*",
+                    }
+                ],
+            },
+            session_factory=session_factory,
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["RoleName"], "MyServiceRole")
+        self.assertEqual(
+            sorted(resources[0]["c7n:InlinePolicies"]), ["AllowS3", "AllowSSM"]
+        )
+        client = session_factory().client("iam")
+        inline_policies_after = client.list_role_policies(RoleName="MyServiceRole")
+        self.assertEqual(len(inline_policies_after["PolicyNames"]), 0)
+
+    def test_iam_role_set_inline_policy_put_validation_error(self):
+        with self.assertRaises(Exception):
+            self.load_policy(
+                {
+                    "name": "iam-role-set-inline-policy-invalid",
+                    "resource": "aws.iam-role",
+                    "actions": [
+                        {
+                            "type": "set-inline-policy",
+                            "state": "put",
+                            "name": "AllowSSM",
+                            # missing 'policy'
+                        }
+                    ],
+                },
+            )
+
     def test_iam_group_has_inline_policy(self):
         session_factory = self.replay_flight_data("test_iam_group_has_inline_policy")
         self.patch(IamGroupInlinePolicy, "executor_factory", MainThreadExecutor)

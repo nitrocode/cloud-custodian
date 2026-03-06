@@ -1,0 +1,31 @@
+{
+    "status_code": 200,
+    "data": {
+        "ResponseMetadata": {
+            "RetryAttempts": 0,
+            "HTTPStatusCode": 200,
+            "RequestId": "bbbbcccc-1111-2222-3333-ccccddddeeee",
+            "HTTPHeaders": {}
+        },
+        "IsTruncated": false,
+        "Roles": [
+            {
+                "RoleId": "AROAXXXXXXXXXXXXXXXX2",
+                "RoleName": "MyServiceRole",
+                "Path": "/",
+                "Arn": "arn:aws:iam::123456789012:role/MyServiceRole",
+                "CreateDate": {
+                    "__class__": "datetime",
+                    "year": 2023,
+                    "month": 1,
+                    "day": 1,
+                    "hour": 0,
+                    "minute": 0,
+                    "second": 0,
+                    "microsecond": 0
+                },
+                "AssumeRolePolicyDocument": "%7B%22Version%22%3A%222012-10-17%22%7D"
+            }
+        ]
+    }
+}
