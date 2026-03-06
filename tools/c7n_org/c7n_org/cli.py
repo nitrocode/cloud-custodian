@@ -320,6 +320,33 @@ def filter_policies(policies_config, tags, policies, resource, not_policies=None
     policies_config['policies'] = filtered_policies
 
 
+def _policy_report_fields_from_data(policy_data):
+    """Extract report fields from a raw policy dict.
+
+    Supports three item formats within ``report.fields``:
+
+    * A plain string ``"FieldName"`` — the field name is used as both the
+      column header and the JMESPath expression.
+    * A plain string containing ``=`` — treated as ``"Header=jmespath"``
+      (identical to the ``--field`` CLI argument format).
+    * A single-key mapping ``{"Header": "jmespath"}`` — the key is the
+      column header and the value is the JMESPath expression.
+
+    Returns a list of ``"Header=jmespath"`` strings compatible with the
+    ``Formatter`` ``extra_fields`` parameter.
+    """
+    fields = []
+    for item in policy_data.get('report', {}).get('fields', ()):
+        if isinstance(item, str):
+            if '=' not in item:
+                item = f'{item}={item}'
+            fields.append(item)
+        elif isinstance(item, dict):
+            for header, expr in item.items():
+                fields.append(f'{header}={expr}')
+    return fields
+
+
 def report_account(account, region, policies_config, output_path, cache_path, debug):
     output_path = os.path.join(output_path, account['name'], region)
     cache_path = os.path.join(cache_path, "%s-%s.cache" % (account['name'], region))
@@ -444,11 +471,30 @@ def report(config, output, use, output_dir, accounts,
         (('Account', 'account'), ('Region', 'region'), ('Policy', 'policy')))
     config = Config.empty()
 
+    # Collect extra fields from each policy's ``report`` block, then append
+    # any fields supplied via the ``--field`` CLI option.
+    policy_fields = []
+    for p in custodian_config.get('policies', ()):
+        policy_fields.extend(_policy_report_fields_from_data(p))
+    extra_fields = policy_fields + list(field)
+
+    # The CLI ``--no-default-fields`` flag takes precedence; otherwise check
+    # whether any policy has set ``report.default_fields: false``.  The first
+    # policy that explicitly declares ``default_fields`` wins, which is
+    # consistent with the behaviour of the core ``custodian report`` command.
+    include_default_fields = not no_default_fields
+    if include_default_fields:
+        for p in custodian_config.get('policies', ()):
+            report_cfg = p.get('report', {})
+            if 'default_fields' in report_cfg:
+                include_default_fields = report_cfg['default_fields']
+                break
+
     factory = get_resource_class(list(resource_types)[0])
     formatter = Formatter(
         factory.resource_type,
-        extra_fields=field,
-        include_default_fields=not no_default_fields,
+        extra_fields=extra_fields,
+        include_default_fields=include_default_fields,
         include_region=False,
         include_policy=False,
         fields=prefix_fields)
