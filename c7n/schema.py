@@ -337,7 +337,30 @@ def get_default_definitions(resource_defs):
                 # utilization between policies that have different
                 # queries.
                 'query': {
-                    'type': 'array', 'items': {'type': 'object'}}
+                    'type': 'array', 'items': {'type': 'object'}},
+                'report': {
+                    'type': 'object',
+                    'additionalProperties': False,
+                    'properties': {
+                        'fields': {
+                            'type': 'array',
+                            'items': {
+                                'anyOf': [
+                                    {'type': 'string'},
+                                    {
+                                        'type': 'object',
+                                        'minProperties': 1,
+                                        'maxProperties': 1,
+                                        'patternProperties': {
+                                            '': {'type': 'string'}
+                                        },
+                                    },
+                                ]
+                            },
+                        },
+                        'default_fields': {'type': 'boolean'},
+                    },
+                },
 
             },
         },
