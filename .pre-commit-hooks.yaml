@@ -4,3 +4,9 @@
   entry: custodian validate
   language: python
   files: policies/.*\.y?ml$
+- id: c7n-org-validate
+  name: c7n-org policy validate
+  description: Validates Cloud Custodian policy files using c7n-org.
+  entry: c7n-org validate -f
+  language: python
+  files: policies/.*\.y?ml$

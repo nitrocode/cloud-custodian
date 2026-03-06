@@ -366,3 +366,62 @@ class OrgTest(TestUtils):
              "--debug", "-s", "output", "--cache-path", "cache"],
             catch_exceptions=False)
         self.assertEqual(result.exit_code, 0)
+
+    def _write_policy_file(self, root, filename, content):
+        path = os.path.join(root, filename)
+        with open(path, 'w') as fh:
+            fh.write(yaml.safe_dump(content, default_flow_style=False))
+        return path
+
+    def test_validate_command_valid_policy(self):
+        root = self.get_temp_dir()
+        policy_file = self._write_policy_file(root, 'policies.yml', {
+            'policies': [{
+                'name': 's3-check',
+                'resource': 'aws.s3',
+                'filters': [{'type': 'value', 'key': 'Name', 'value': 'test'}],
+            }]
+        })
+        runner = CliRunner()
+        result = runner.invoke(org.cli, ['validate', '-f', policy_file])
+        self.assertEqual(result.exit_code, 0)
+
+    def test_validate_command_invalid_key(self):
+        """Catch typo: 'filter' instead of 'filters'."""
+        root = self.get_temp_dir()
+        policy_file = self._write_policy_file(root, 'bad_policies.yml', {
+            'policies': [{
+                'name': 's3-typo',
+                'resource': 'aws.s3',
+                'filter': [{'type': 'value', 'key': 'Name', 'value': 'test'}],
+            }]
+        })
+        runner = CliRunner()
+        result = runner.invoke(org.cli, ['validate', '-f', policy_file])
+        self.assertNotEqual(result.exit_code, 0)
+
+    def test_validate_command_invalid_yaml(self):
+        root = self.get_temp_dir()
+        path = os.path.join(root, 'bad.yml')
+        with open(path, 'w') as fh:
+            fh.write('policies:\n  - name: [invalid\n')
+        runner = CliRunner()
+        result = runner.invoke(org.cli, ['validate', '-f', path])
+        self.assertNotEqual(result.exit_code, 0)
+
+    def test_validate_command_multiple_files(self):
+        root = self.get_temp_dir()
+        valid_file = self._write_policy_file(root, 'valid.yml', {
+            'policies': [{'name': 'ec2-check', 'resource': 'aws.ec2'}]
+        })
+        invalid_file = self._write_policy_file(root, 'invalid.yml', {
+            'policies': [{
+                'name': 'ec2-typo',
+                'resource': 'aws.ec2',
+                'filter': [],
+            }]
+        })
+        runner = CliRunner()
+        result = runner.invoke(
+            org.cli, ['validate', '-f', valid_file, '-f', invalid_file])
+        self.assertNotEqual(result.exit_code, 0)
