@@ -2123,6 +2123,101 @@ class IamInlinePolicyUsage(BaseTest):
         self.assertEqual(len(resources), 1)
         self.assertFalse(resources[0]["c7n:InlinePolicies"])
 
+    def test_iam_role_has_statement_inline(self):
+        session_factory = self.replay_flight_data("test_iam_role_has_statement_inline")
+        p = self.load_policy(
+            {
+                "name": "iam-role-has-statement-inline",
+                "resource": "iam-role",
+                "filters": [
+                    {
+                        "type": "has-statement",
+                        "statements": [
+                            {
+                                "Effect": "Allow",
+                                "Action": "iam:*",
+                            }
+                        ],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+            config={"account_id": "123456789012"},
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["RoleName"], "test-role-iam-wildcard")
+        self.assertIn("c7n:CombinedPolicy", resources[0])
+
+    def test_iam_role_has_statement_managed(self):
+        session_factory = self.replay_flight_data("test_iam_role_has_statement_managed")
+        p = self.load_policy(
+            {
+                "name": "iam-role-has-statement-managed",
+                "resource": "iam-role",
+                "filters": [
+                    {
+                        "type": "has-statement",
+                        "statements": [
+                            {
+                                "Effect": "Allow",
+                                "Action": "organizations:*",
+                            }
+                        ],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+            config={"account_id": "123456789012"},
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["RoleName"], "test-role-managed-wildcard")
+
+    def test_iam_role_has_statement_no_match(self):
+        session_factory = self.replay_flight_data("test_iam_role_has_statement_no_match")
+        p = self.load_policy(
+            {
+                "name": "iam-role-has-statement-no-match",
+                "resource": "iam-role",
+                "filters": [
+                    {
+                        "type": "has-statement",
+                        "statements": [
+                            {
+                                "Effect": "Allow",
+                                "Action": "iam:*",
+                            }
+                        ],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+            config={"account_id": "123456789012"},
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 0)
+
+    def test_iam_role_has_statement_by_sid(self):
+        session_factory = self.replay_flight_data("test_iam_role_has_statement_inline")
+        p = self.load_policy(
+            {
+                "name": "iam-role-has-statement-by-sid",
+                "resource": "iam-role",
+                "filters": [
+                    {
+                        "type": "has-statement",
+                        "statement_ids": ["AllowIamWildcard"],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+            config={"account_id": "123456789012"},
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["RoleName"], "test-role-iam-wildcard")
+
     def test_iam_group_has_inline_policy(self):
         session_factory = self.replay_flight_data("test_iam_group_has_inline_policy")
         self.patch(IamGroupInlinePolicy, "executor_factory", MainThreadExecutor)

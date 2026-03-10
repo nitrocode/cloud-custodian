@@ -1,0 +1,40 @@
+{
+    "status_code": 200,
+    "data": {
+        "Policy": {
+            "PolicyName": "OrgWildcardPolicy",
+            "PolicyId": "ANPATEST000000000001",
+            "Arn": "arn:aws:iam::123456789012:policy/OrgWildcardPolicy",
+            "Path": "/",
+            "DefaultVersionId": "v1",
+            "AttachmentCount": 1,
+            "PermissionsBoundaryUsageCount": 0,
+            "IsAttachable": true,
+            "CreateDate": {
+                "__class__": "datetime",
+                "year": 2023,
+                "month": 1,
+                "day": 1,
+                "hour": 0,
+                "minute": 0,
+                "second": 0,
+                "microsecond": 0
+            },
+            "UpdateDate": {
+                "__class__": "datetime",
+                "year": 2023,
+                "month": 1,
+                "day": 1,
+                "hour": 0,
+                "minute": 0,
+                "second": 0,
+                "microsecond": 0
+            }
+        },
+        "ResponseMetadata": {
+            "RequestId": "test-request-id-013",
+            "HTTPStatusCode": 200,
+            "HTTPHeaders": {}
+        }
+    }
+}

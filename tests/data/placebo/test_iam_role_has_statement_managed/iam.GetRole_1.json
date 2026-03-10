@@ -1,0 +1,28 @@
+{
+    "status_code": 200,
+    "data": {
+        "Role": {
+            "RoleName": "test-role-managed-wildcard",
+            "RoleId": "AROATEST000000000003",
+            "Arn": "arn:aws:iam::123456789012:role/test-role-managed-wildcard",
+            "Path": "/",
+            "CreateDate": {
+                "__class__": "datetime",
+                "year": 2023,
+                "month": 1,
+                "day": 1,
+                "hour": 0,
+                "minute": 0,
+                "second": 0,
+                "microsecond": 0
+            },
+            "AssumeRolePolicyDocument": "%7B%22Version%22%3A%222012-10-17%22%7D",
+            "MaxSessionDuration": 3600
+        },
+        "ResponseMetadata": {
+            "RequestId": "test-request-id-getRole3",
+            "HTTPStatusCode": 200,
+            "HTTPHeaders": {}
+        }
+    }
+}

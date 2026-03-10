@@ -1,0 +1,17 @@
+{
+    "status_code": 200,
+    "data": {
+        "AttachedPolicies": [
+            {
+                "PolicyName": "OrgWildcardPolicy",
+                "PolicyArn": "arn:aws:iam::123456789012:policy/OrgWildcardPolicy"
+            }
+        ],
+        "IsTruncated": false,
+        "ResponseMetadata": {
+            "RequestId": "test-request-id-012",
+            "HTTPStatusCode": 200,
+            "HTTPHeaders": {}
+        }
+    }
+}
