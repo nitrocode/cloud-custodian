@@ -966,14 +966,48 @@ class IamRoleHasStatementFilter(HasStatementFilter):
     invoking the IAM policy simulator, making it significantly faster
     than :py:class:`CheckPermissions` when scanning large numbers of roles.
 
-    This is particularly useful for detecting roles that contain highly
-    sensitive wildcard permissions such as ``iam:*``, ``organizations:*``,
-    or ``account:*`` where a direct policy-document inspection is sufficient.
+    **Matching behaviour**: This filter performs **literal text comparison**
+    of policy statement fields. It checks whether the policy documents for
+    a role contain statements whose fields equal the values you specify,
+    including any wildcard characters (``*``, ``?``) treated as plain text.
+    It does **not** perform AWS IAM wildcard expansion.
+
+    - ``Action: 'iam:CreateUser'`` — matches only statements that carry the
+      exact text ``iam:CreateUser`` (case-insensitive) as an action value.
+    - ``Action: 'iam:*'`` — matches only statements that carry the literal
+      text ``iam:*`` as their action value.  It does **not** match every
+      statement that happens to include an IAM action.
+    - ``Action: 'iam:Create*'`` — matches only statements that carry the
+      literal text ``iam:Create*`` as their action value.  It does **not**
+      automatically match statements that carry ``iam:CreateUser`` or
+      ``iam:CreateRole``.
+
+    **When to use** ``check-permissions`` **instead**: If you need to
+    determine whether a role *can effectively perform* a specific action
+    (taking into account all wildcard patterns in the policy, such as
+    ``iam:Create*`` granting ``iam:CreateUser``), use the
+    :py:class:`CheckPermissions` filter, which uses the AWS IAM policy
+    simulator for accurate semantic evaluation.
 
     :example:
 
-    Find roles that have any inline or managed policy statement granting
-    wildcard IAM permissions:
+    Find roles that have a statement explicitly granting ``iam:CreateUser``:
+
+    .. code-block:: yaml
+
+        policies:
+          - name: iam-roles-can-create-users
+            resource: aws.iam-role
+            filters:
+              - type: has-statement
+                statements:
+                  - Effect: Allow
+                    Action: 'iam:CreateUser'
+
+    :example:
+
+    Find roles that have a statement containing the literal ``iam:*``
+    wildcard (granting all IAM actions):
 
     .. code-block:: yaml
 
@@ -988,18 +1022,65 @@ class IamRoleHasStatementFilter(HasStatementFilter):
 
     :example:
 
-    Find roles that have a statement granting full organizations access:
+    Find roles that have a statement containing the literal ``iam:Create*``
+    wildcard pattern in their policy (which grants all ``iam:Create*``
+    actions):
 
     .. code-block:: yaml
 
         policies:
-          - name: iam-roles-org-full-access
+          - name: iam-roles-with-iam-create-wildcard
             resource: aws.iam-role
             filters:
               - type: has-statement
                 statements:
                   - Effect: Allow
-                    Action: 'organizations:*'
+                    Action: 'iam:Create*'
+
+    :example:
+
+    To find roles that *can effectively perform* ``iam:CreateUser`` through
+    any combination of explicit grants or wildcard patterns, combine
+    multiple ``has-statement`` checks with an ``or`` operator.  This covers
+    the most common patterns without calling the policy simulator:
+
+    .. code-block:: yaml
+
+        policies:
+          - name: iam-roles-effective-create-user
+            resource: aws.iam-role
+            filters:
+              - or:
+                - type: has-statement
+                  statements:
+                    - Effect: Allow
+                      Action: 'iam:CreateUser'
+                - type: has-statement
+                  statements:
+                    - Effect: Allow
+                      Action: 'iam:Create*'
+                - type: has-statement
+                  statements:
+                    - Effect: Allow
+                      Action: 'iam:*'
+                - type: has-statement
+                  statements:
+                    - Effect: Allow
+                      Action: '*:*'
+
+    For complete accuracy (including unusual wildcard patterns), use
+    ``check-permissions`` instead:
+
+    .. code-block:: yaml
+
+        policies:
+          - name: iam-roles-effective-create-user-accurate
+            resource: aws.iam-role
+            filters:
+              - type: check-permissions
+                match: allowed
+                actions:
+                  - iam:CreateUser
 
     :example:
 
@@ -1014,6 +1095,21 @@ class IamRoleHasStatementFilter(HasStatementFilter):
               - type: has-statement
                 statement_ids:
                   - AllowAll
+
+    :example:
+
+    Find roles that have a statement granting full Organizations access:
+
+    .. code-block:: yaml
+
+        policies:
+          - name: iam-roles-org-full-access
+            resource: aws.iam-role
+            filters:
+              - type: has-statement
+                statements:
+                  - Effect: Allow
+                    Action: 'organizations:*'
     """
 
     permissions = (

@@ -1,0 +1,13 @@
+{
+    "status_code": 200,
+    "data": {
+        "RoleName": "test-role-create-wildcard",
+        "PolicyName": "IamCreateWildcardPolicy",
+        "PolicyDocument": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"AllowIamCreate\",\"Effect\":\"Allow\",\"Action\":\"iam:Create*\",\"Resource\":\"*\"}]}",
+        "ResponseMetadata": {
+            "RequestId": "test-prefix-wildcard-004",
+            "HTTPStatusCode": 200,
+            "HTTPHeaders": {}
+        }
+    }
+}
