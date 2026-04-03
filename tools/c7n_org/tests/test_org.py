@@ -366,3 +366,196 @@ class OrgTest(TestUtils):
              "--debug", "-s", "output", "--cache-path", "cache"],
             catch_exceptions=False)
         self.assertEqual(result.exit_code, 0)
+
+    def test_policy_report_fields_from_data_no_report(self):
+        """Policy without a report block returns empty list."""
+        p = {'name': 'test', 'resource': 'aws.ec2'}
+        self.assertEqual(org._policy_report_fields_from_data(p), [])
+
+    def test_policy_report_fields_from_data_empty_fields(self):
+        """Policy with empty fields list returns empty list."""
+        p = {'name': 'test', 'resource': 'aws.ec2', 'report': {'fields': []}}
+        self.assertEqual(org._policy_report_fields_from_data(p), [])
+
+    def test_policy_report_fields_from_data_plain_string(self):
+        """A plain string field is expanded to Header=jmespath form."""
+        p = {'name': 'test', 'resource': 'aws.ec2', 'report': {'fields': ['VpcId']}}
+        self.assertEqual(org._policy_report_fields_from_data(p), ['VpcId=VpcId'])
+
+    def test_policy_report_fields_from_data_string_with_equals(self):
+        """A string already in Header=jmespath format passes through unchanged."""
+        expr = 'Email=Tags[?Key==`Email`].Value | [0]'
+        p = {'name': 'test', 'resource': 'aws.ec2', 'report': {'fields': [expr]}}
+        self.assertEqual(org._policy_report_fields_from_data(p), [expr])
+
+    def test_policy_report_fields_from_data_dict_field(self):
+        """A single-key dict is converted to Header=jmespath."""
+        p = {'name': 'test', 'resource': 'aws.ec2',
+             'report': {'fields': [{'AccessKey0Active': '"c7n:matched-keys"[0].active'}]}}
+        self.assertEqual(
+            org._policy_report_fields_from_data(p),
+            ['AccessKey0Active="c7n:matched-keys"[0].active'])
+
+    def test_policy_report_fields_from_data_mixed(self):
+        """Mixed field formats all produce correct Header=jmespath strings."""
+        p = {'name': 'test', 'resource': 'aws.ec2', 'report': {'fields': [
+            'VpcId',
+            'Email=Tags[?Key==`Email`].Value | [0]',
+            {'AccessKey0Active': '"c7n:matched-keys"[0].active'},
+        ]}}
+        self.assertEqual(org._policy_report_fields_from_data(p), [
+            'VpcId=VpcId',
+            'Email=Tags[?Key==`Email`].Value | [0]',
+            'AccessKey0Active="c7n:matched-keys"[0].active',
+        ])
+
+    def test_report_uses_policy_fields(self):
+        """c7n-org report picks up fields defined in the policy YAML."""
+        run_dir = self.setup_run_dir(
+            accounts={
+                'accounts': [{
+                    'name': 'dev',
+                    'account_id': '112233445566',
+                    'role': 'arn:aws:iam::112233445566:role/foobar',
+                    'regions': ['us-east-1'],
+                }]
+            },
+            policies={
+                'policies': [{
+                    'name': 'compute',
+                    'resource': 'aws.ec2',
+                    'report': {
+                        'fields': [
+                            'VpcId',
+                            {'CustomField': 'Tags[?Key==`Env`].Value | [0]'},
+                        ],
+                    },
+                }]
+            },
+        )
+        # Return a single fake record from report_account.
+        fake_record = {
+            'InstanceId': 'i-abc',
+            'InstanceType': 't2.micro',
+            'LaunchTime': '2024-01-01T00:00:00Z',
+            'VpcId': 'vpc-123',
+            'Tags': [{'Key': 'Env', 'Value': 'prod'}],
+            'account': 'dev',
+            'region': 'us-east-1',
+            'policy': 'compute',
+            'account_id': '112233445566',
+        }
+        self.patch(org, 'report_account', mock.MagicMock(return_value=[fake_record]))
+        self.change_cwd(run_dir)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            org.cli,
+            ['report', '-c', 'accounts.yml', '-u', 'policies.yml',
+             '-s', 'output', '--cache-path', 'cache', '--debug'],
+            catch_exceptions=False)
+
+        self.assertEqual(result.exit_code, 0)
+        output = result.output
+        # Policy-level custom fields should appear in the header row.
+        self.assertIn('VpcId', output)
+        self.assertIn('CustomField', output)
+        # The record values should also appear.
+        self.assertIn('vpc-123', output)
+        self.assertIn('prod', output)
+
+    def test_report_default_fields_false(self):
+        """``report.default_fields: false`` excludes the default resource columns."""
+        run_dir = self.setup_run_dir(
+            accounts={
+                'accounts': [{
+                    'name': 'dev',
+                    'account_id': '112233445566',
+                    'role': 'arn:aws:iam::112233445566:role/foobar',
+                    'regions': ['us-east-1'],
+                }]
+            },
+            policies={
+                'policies': [{
+                    'name': 'compute',
+                    'resource': 'aws.ec2',
+                    'report': {
+                        'default_fields': False,
+                        'fields': [{'CustomField': 'Tags[?Key==`Env`].Value | [0]'}],
+                    },
+                }]
+            },
+        )
+        fake_record = {
+            'InstanceId': 'i-abc',
+            'LaunchTime': '2024-01-01T00:00:00Z',
+            'Tags': [{'Key': 'Env', 'Value': 'prod'}],
+            'account': 'dev',
+            'region': 'us-east-1',
+            'policy': 'compute',
+            'account_id': '112233445566',
+        }
+        self.patch(org, 'report_account', mock.MagicMock(return_value=[fake_record]))
+        self.change_cwd(run_dir)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            org.cli,
+            ['report', '-c', 'accounts.yml', '-u', 'policies.yml',
+             '-s', 'output', '--cache-path', 'cache', '--debug'],
+            catch_exceptions=False)
+
+        self.assertEqual(result.exit_code, 0)
+        output = result.output
+        # Custom field should appear.
+        self.assertIn('CustomField', output)
+        # Default EC2 field InstanceId must NOT appear (default_fields: false).
+        self.assertNotIn('InstanceId', output)
+
+    def test_report_cli_field_supplements_policy_fields(self):
+        """CLI ``--field`` args are appended after policy-level fields."""
+        run_dir = self.setup_run_dir(
+            accounts={
+                'accounts': [{
+                    'name': 'dev',
+                    'account_id': '112233445566',
+                    'role': 'arn:aws:iam::112233445566:role/foobar',
+                    'regions': ['us-east-1'],
+                }]
+            },
+            policies={
+                'policies': [{
+                    'name': 'compute',
+                    'resource': 'aws.ec2',
+                    'report': {
+                        'fields': [{'PolicyField': 'VpcId'}],
+                    },
+                }]
+            },
+        )
+        fake_record = {
+            'InstanceId': 'i-abc',
+            'LaunchTime': '2024-01-01T00:00:00Z',
+            'VpcId': 'vpc-123',
+            'Tags': [],
+            'account': 'dev',
+            'region': 'us-east-1',
+            'policy': 'compute',
+            'account_id': '112233445566',
+        }
+        self.patch(org, 'report_account', mock.MagicMock(return_value=[fake_record]))
+        self.change_cwd(run_dir)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            org.cli,
+            ['report', '-c', 'accounts.yml', '-u', 'policies.yml',
+             '-s', 'output', '--cache-path', 'cache', '--debug',
+             '--field', 'CLIField=InstanceId'],
+            catch_exceptions=False)
+
+        self.assertEqual(result.exit_code, 0)
+        output = result.output
+        # Both policy-level and CLI fields should appear.
+        self.assertIn('PolicyField', output)
+        self.assertIn('CLIField', output)

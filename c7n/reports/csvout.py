@@ -62,14 +62,61 @@ def strip_output_path(path, policy_name):
     return ''.join(path.strip('/').rpartition(policy_name)[:-1])
 
 
+def _policy_report_fields(policy):
+    """Extract report fields from a policy's report configuration.
+
+    Supports three item formats within ``report.fields``:
+
+    * A plain string ``"FieldName"`` — the field name is used as both the
+      column header and the JMESPath expression.
+    * A plain string containing ``=`` — treated as ``"Header=jmespath"``
+      (identical to the ``--field`` CLI argument format).
+    * A single-key mapping ``{"Header": "jmespath"}`` — the key is the
+      column header and the value is the JMESPath expression.
+
+    Returns a list of ``"Header=jmespath"`` strings compatible with the
+    ``Formatter`` ``extra_fields`` parameter.
+    """
+    fields = []
+    for item in policy.data.get('report', {}).get('fields', ()):
+        if isinstance(item, str):
+            if '=' not in item:
+                item = f'{item}={item}'
+            fields.append(item)
+        elif isinstance(item, dict):
+            for header, expr in item.items():
+                fields.append(f'{header}={expr}')
+    return fields
+
+
 def report(policies, start_date, options, output_fh, raw_output_fh=None):
     """Format a policy's extant records into a report."""
     regions = {p.options.region for p in policies}
     policy_names = {p.name for p in policies}
+
+    # Collect extra fields defined in each policy's ``report`` block, then
+    # append any fields supplied via the ``--field`` CLI option so that CLI
+    # arguments can supplement or override policy-level fields.
+    policy_fields = []
+    for p in policies:
+        policy_fields.extend(_policy_report_fields(p))
+    extra_fields = policy_fields + list(options.field)
+
+    # Determine whether default fields should be included.  The CLI flag
+    # ``--no-default-fields`` takes precedence; otherwise fall back to the
+    # ``default_fields`` setting of the first policy that specifies it.
+    include_default_fields = not options.no_default_fields
+    if include_default_fields:
+        for p in policies:
+            report_cfg = p.data.get('report', {})
+            if 'default_fields' in report_cfg:
+                include_default_fields = report_cfg['default_fields']
+                break
+
     formatter = Formatter(
         policies[0].resource_manager.resource_type,
-        extra_fields=options.field,
-        include_default_fields=not options.no_default_fields,
+        extra_fields=extra_fields,
+        include_default_fields=include_default_fields,
         include_region=len(regions) > 1,
         include_policy=len(policy_names) > 1
     )
