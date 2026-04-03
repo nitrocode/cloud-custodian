@@ -804,6 +804,47 @@ def run(config, use, output_dir, accounts, not_accounts, tags, region,
         sys.exit(1)
 
 
+@cli.command()
+@click.option(
+    '-f', '--file', 'config_files',
+    multiple=True, required=True, type=click.Path(exists=True),
+    help="Policy file(s) to validate")
+@click.option('-v', '--verbose', default=False, is_flag=True, help="Verbose")
+def validate(config_files, verbose):
+    """Validate one or more policy files for structural correctness."""
+    from c7n.exceptions import PolicyValidationError
+    from c7n.structure import StructureParser
+
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s: %(name)s:%(levelname)s %(message)s")
+
+    structure = StructureParser()
+    error_count = 0
+
+    for config_file in config_files:
+        config_file = os.path.expanduser(config_file)
+        with open(config_file) as fh:
+            try:
+                data = yaml.safe_load(fh.read())
+            except yaml.YAMLError as e:
+                log.error("Invalid YAML in %s: %s", config_file, e)
+                error_count += 1
+                continue
+        try:
+            structure.validate(data)
+        except PolicyValidationError as e:
+            log.error("Configuration invalid: %s", config_file)
+            log.error("%s", e)
+            error_count += 1
+            continue
+        log.info("Configuration valid: %s", config_file)
+
+    if error_count:
+        sys.exit(1)
+
+
 cli.add_command(orgaccounts.aws_accounts)
 
 if __name__ == "__main__":
