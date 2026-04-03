@@ -739,13 +739,21 @@ def initialize_provider_output(policies_config, output_dir, regions):
 @click.option("--dryrun", default=False, is_flag=True)
 @click.option('--debug', default=False, is_flag=True)
 @click.option('-v', '--verbose', default=False, help="Verbose", is_flag=True)
+@click.option('--list-policies', 'list_policies', default=False, is_flag=True,
+              help="List matching policies without running them")
 def run(config, use, output_dir, accounts, not_accounts, tags, region,
         policy, policy_tags, cache_period, cache_path, metrics,
-        dryrun, debug, verbose, metrics_uri):
+        dryrun, debug, verbose, metrics_uri, list_policies):
     """run a custodian policy across accounts"""
     accounts_config, custodian_config, executor = init(
         config, use, debug, verbose, accounts, tags, policy, policy_tags=policy_tags,
         not_accounts=not_accounts)
+
+    if list_policies:
+        for p in custodian_config.get('policies', ()):
+            click.echo(p['name'])
+        return
+
     if not (accounts_config["accounts"] and custodian_config["policies"]):
         log.info(
             "Targeting accounts: %d, policies: %d. Nothing to do." %

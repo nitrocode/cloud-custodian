@@ -346,6 +346,47 @@ class OrgTest(TestUtils):
             "Targeting accounts: 0, policies: 2. Nothing to do.",
         )
 
+    def test_cli_list_policies(self):
+        run_dir = self.setup_run_dir()
+        self.change_cwd(run_dir)
+        runner = CliRunner()
+
+        # Without filters - all policies listed
+        result = runner.invoke(
+            org.cli,
+            ['run', '-c', 'accounts.yml', '-u', 'policies.yml',
+             '-s', 'output', '--list-policies'],
+            catch_exceptions=False)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.output.strip(), 'compute\nserverless')
+
+        # With policy tag filter - only matching policies listed
+        result = runner.invoke(
+            org.cli,
+            ['run', '-c', 'accounts.yml', '-u', 'policies.yml',
+             '-s', 'output', '-l', 'green', '--list-policies'],
+            catch_exceptions=False)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.output.strip(), 'compute')
+
+        # With policy name filter - only matching policy listed
+        result = runner.invoke(
+            org.cli,
+            ['run', '-c', 'accounts.yml', '-u', 'policies.yml',
+             '-s', 'output', '-p', 'serverless', '--list-policies'],
+            catch_exceptions=False)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.output.strip(), 'serverless')
+
+        # With no matching policies - empty output
+        result = runner.invoke(
+            org.cli,
+            ['run', '-c', 'accounts.yml', '-u', 'policies.yml',
+             '-s', 'output', '-l', 'nonexistent', '--list-policies'],
+            catch_exceptions=False)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.output.strip(), '')
+
     def test_validate_oci_provider(self):
         run_dir = self.setup_run_dir(
             accounts=ACCOUNTS_OCI,
