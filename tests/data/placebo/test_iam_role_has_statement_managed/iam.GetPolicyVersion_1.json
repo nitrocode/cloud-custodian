@@ -1,0 +1,25 @@
+{
+    "status_code": 200,
+    "data": {
+        "PolicyVersion": {
+            "Document": "%7B%22Version%22%3A%20%222012-10-17%22%2C%20%22Statement%22%3A%20%5B%7B%22Sid%22%3A%20%22AllowOrgWildcard%22%2C%20%22Effect%22%3A%20%22Allow%22%2C%20%22Action%22%3A%20%22organizations%3A%2A%22%2C%20%22Resource%22%3A%20%22%2A%22%7D%5D%7D",
+            "VersionId": "v1",
+            "IsDefaultVersion": true,
+            "CreateDate": {
+                "__class__": "datetime",
+                "year": 2023,
+                "month": 1,
+                "day": 1,
+                "hour": 0,
+                "minute": 0,
+                "second": 0,
+                "microsecond": 0
+            }
+        },
+        "ResponseMetadata": {
+            "RequestId": "test-request-id-014",
+            "HTTPStatusCode": 200,
+            "HTTPHeaders": {}
+        }
+    }
+}

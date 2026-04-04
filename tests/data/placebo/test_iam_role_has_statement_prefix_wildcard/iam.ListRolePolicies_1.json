@@ -1,0 +1,14 @@
+{
+    "status_code": 200,
+    "data": {
+        "PolicyNames": [
+            "IamCreateWildcardPolicy"
+        ],
+        "IsTruncated": false,
+        "ResponseMetadata": {
+            "RequestId": "test-prefix-wildcard-003",
+            "HTTPStatusCode": 200,
+            "HTTPHeaders": {}
+        }
+    }
+}

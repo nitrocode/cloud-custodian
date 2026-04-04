@@ -1,0 +1,13 @@
+{
+    "status_code": 200,
+    "data": {
+        "RoleName": "test-role-no-wildcard",
+        "PolicyName": "ReadOnlyPolicy",
+        "PolicyDocument": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"AllowS3Read\",\"Effect\":\"Allow\",\"Action\":\"s3:GetObject\",\"Resource\":\"*\"}]}",
+        "ResponseMetadata": {
+            "RequestId": "test-request-id-022",
+            "HTTPStatusCode": 200,
+            "HTTPHeaders": {}
+        }
+    }
+}

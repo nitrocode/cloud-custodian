@@ -1,0 +1,13 @@
+{
+    "status_code": 200,
+    "data": {
+        "RoleName": "test-role-create-user",
+        "PolicyName": "CreateUserPolicy",
+        "PolicyDocument": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"AllowCreateUser\",\"Effect\":\"Allow\",\"Action\":\"iam:CreateUser\",\"Resource\":\"*\"}]}",
+        "ResponseMetadata": {
+            "RequestId": "test-exact-action-004",
+            "HTTPStatusCode": 200,
+            "HTTPHeaders": {}
+        }
+    }
+}

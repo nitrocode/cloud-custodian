@@ -25,6 +25,7 @@ from c7n.exceptions import PolicyValidationError
 from c7n.filters import ValueFilter, Filter
 from c7n.filters.multiattr import MultiAttrFilter
 from c7n.filters.iamaccess import CrossAccountAccessFilter
+from c7n.filters.policystatement import HasStatementFilter
 from c7n.manager import resources
 from c7n.query import (
     ChildResourceManager,
@@ -955,6 +956,255 @@ class RoleCrossAccountAccess(CrossAccountAccessFilter):
         # white list accounts
         whitelist_from=ValuesFrom.schema,
         whitelist={'type': 'array', 'items': {'type': 'string'}})
+
+
+@Role.filter_registry.register('has-statement')
+class IamRoleHasStatementFilter(HasStatementFilter):
+    """Find IAM roles with matching identity-based policy statements.
+
+    Checks both inline policies and attached managed policies without
+    invoking the IAM policy simulator, making it significantly faster
+    than :py:class:`CheckPermissions` when scanning large numbers of roles.
+
+    **Matching behaviour**: This filter performs **literal text comparison**
+    of policy statement fields. It checks whether the policy documents for
+    a role contain statements whose fields equal the values you specify,
+    including any wildcard characters (``*``, ``?``) treated as plain text.
+    It does **not** perform AWS IAM wildcard expansion.
+
+    - ``Action: 'iam:CreateUser'`` — matches only statements that carry the
+      exact text ``iam:CreateUser`` (case-insensitive) as an action value.
+    - ``Action: 'iam:*'`` — matches only statements that carry the literal
+      text ``iam:*`` as their action value.  It does **not** match every
+      statement that happens to include an IAM action.
+    - ``Action: 'iam:Create*'`` — matches only statements that carry the
+      literal text ``iam:Create*`` as their action value.  It does **not**
+      automatically match statements that carry ``iam:CreateUser`` or
+      ``iam:CreateRole``.
+
+    **When to use** ``check-permissions`` **instead**: If you need to
+    determine whether a role *can effectively perform* a specific action
+    (taking into account all wildcard patterns in the policy, such as
+    ``iam:Create*`` granting ``iam:CreateUser``), use the
+    :py:class:`CheckPermissions` filter, which uses the AWS IAM policy
+    simulator for accurate semantic evaluation.
+
+    :example:
+
+    Find roles that have a statement explicitly granting ``iam:CreateUser``:
+
+    .. code-block:: yaml
+
+        policies:
+          - name: iam-roles-can-create-users
+            resource: aws.iam-role
+            filters:
+              - type: has-statement
+                statements:
+                  - Effect: Allow
+                    Action: 'iam:CreateUser'
+
+    :example:
+
+    Find roles that have a statement containing the literal ``iam:*``
+    wildcard (granting all IAM actions):
+
+    .. code-block:: yaml
+
+        policies:
+          - name: iam-roles-with-iam-wildcard
+            resource: aws.iam-role
+            filters:
+              - type: has-statement
+                statements:
+                  - Effect: Allow
+                    Action: 'iam:*'
+
+    :example:
+
+    Find roles that have a statement containing the literal ``iam:Create*``
+    wildcard pattern in their policy (which grants all ``iam:Create*``
+    actions):
+
+    .. code-block:: yaml
+
+        policies:
+          - name: iam-roles-with-iam-create-wildcard
+            resource: aws.iam-role
+            filters:
+              - type: has-statement
+                statements:
+                  - Effect: Allow
+                    Action: 'iam:Create*'
+
+    :example:
+
+    To find roles that *can effectively perform* ``iam:CreateUser`` through
+    any combination of explicit grants or wildcard patterns, combine
+    multiple ``has-statement`` checks with an ``or`` operator.  This covers
+    the most common patterns without calling the policy simulator:
+
+    .. code-block:: yaml
+
+        policies:
+          - name: iam-roles-effective-create-user
+            resource: aws.iam-role
+            filters:
+              - or:
+                - type: has-statement
+                  statements:
+                    - Effect: Allow
+                      Action: 'iam:CreateUser'
+                - type: has-statement
+                  statements:
+                    - Effect: Allow
+                      Action: 'iam:Create*'
+                - type: has-statement
+                  statements:
+                    - Effect: Allow
+                      Action: 'iam:*'
+                - type: has-statement
+                  statements:
+                    - Effect: Allow
+                      Action: '*:*'
+
+    For complete accuracy (including unusual wildcard patterns), use
+    ``check-permissions`` instead:
+
+    .. code-block:: yaml
+
+        policies:
+          - name: iam-roles-effective-create-user-accurate
+            resource: aws.iam-role
+            filters:
+              - type: check-permissions
+                match: allowed
+                actions:
+                  - iam:CreateUser
+
+    :example:
+
+    Find roles that have a specific statement ID in any attached policy:
+
+    .. code-block:: yaml
+
+        policies:
+          - name: iam-roles-with-allow-all-sid
+            resource: aws.iam-role
+            filters:
+              - type: has-statement
+                statement_ids:
+                  - AllowAll
+
+    :example:
+
+    Find roles that have a statement granting full Organizations access:
+
+    .. code-block:: yaml
+
+        policies:
+          - name: iam-roles-org-full-access
+            resource: aws.iam-role
+            filters:
+              - type: has-statement
+                statements:
+                  - Effect: Allow
+                    Action: 'organizations:*'
+    """
+
+    permissions = (
+        'iam:ListRolePolicies',
+        'iam:GetRolePolicy',
+        'iam:ListAttachedRolePolicies',
+        'iam:GetPolicy',
+        'iam:GetPolicyVersion',
+    )
+
+    policy_attribute = 'c7n:CombinedPolicy'
+
+    def process(self, resources, event=None):
+        client = local_session(self.manager.session_factory).client('iam')
+        for r in resources:
+            if self.policy_attribute not in r:
+                self._fetch_and_store_combined_policy(client, r)
+        return super().process(resources)
+
+    def _fetch_and_store_combined_policy(self, client, role):
+        """Fetch all policy statements from inline and attached managed policies."""
+        statements = []
+
+        # Inline policies
+        inline_names = (self.manager.retry(
+            client.list_role_policies,
+            RoleName=role['RoleName'],
+            ignore_err_codes=('NoSuchEntityException',)) or {}).get('PolicyNames', ())
+        for name in inline_names:
+            result = self.manager.retry(
+                client.get_role_policy,
+                RoleName=role['RoleName'],
+                PolicyName=name,
+                ignore_err_codes=('NoSuchEntityException',))
+            if result is None:
+                continue
+            doc = result['PolicyDocument']
+            if isinstance(doc, str):
+                try:
+                    doc = json.loads(doc)
+                except ValueError:
+                    self.log.warning(
+                        "Role %s inline policy %s has malformed document; skipping",
+                        role['RoleName'], name)
+                    continue
+            stmts = doc.get('Statement', [])
+            if isinstance(stmts, dict):
+                stmts = [stmts]
+            statements.extend(stmts)
+
+        # Attached managed policies
+        attached = (self.manager.retry(
+            client.list_attached_role_policies,
+            RoleName=role['RoleName'],
+            ignore_err_codes=('NoSuchEntityException',)) or {}).get('AttachedPolicies', ())
+        for policy in attached:
+            policy_info = (self.manager.retry(
+                client.get_policy,
+                PolicyArn=policy['PolicyArn'],
+                ignore_err_codes=('NoSuchEntityException',)) or {}).get('Policy')
+            if policy_info is None:
+                continue
+            doc_result = self.manager.retry(
+                client.get_policy_version,
+                PolicyArn=policy['PolicyArn'],
+                VersionId=policy_info['DefaultVersionId'],
+                ignore_err_codes=('NoSuchEntityException',))
+            if doc_result is None:
+                continue
+            doc = doc_result['PolicyVersion']['Document']
+            if isinstance(doc, str):
+                try:
+                    doc = json.loads(doc)
+                except ValueError:
+                    self.log.warning(
+                        "Managed policy %s has malformed document; skipping",
+                        policy['PolicyArn'])
+                    continue
+            stmts = doc.get('Statement', [])
+            if isinstance(stmts, dict):
+                stmts = [stmts]
+            statements.extend(stmts)
+
+        role[self.policy_attribute] = json.dumps({
+            'Version': '2012-10-17',
+            'Statement': statements,
+        })
+
+    def get_std_format_args(self, role):
+        return {
+            'account_id': self.manager.config.account_id,
+            'region': self.manager.config.region,
+            'role_name': role['RoleName'],
+            'role_arn': role['Arn'],
+        }
 
 
 @Role.filter_registry.register('has-inline-policy')

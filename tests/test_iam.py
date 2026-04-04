@@ -2123,6 +2123,183 @@ class IamInlinePolicyUsage(BaseTest):
         self.assertEqual(len(resources), 1)
         self.assertFalse(resources[0]["c7n:InlinePolicies"])
 
+    def test_iam_role_has_statement_inline(self):
+        session_factory = self.replay_flight_data("test_iam_role_has_statement_inline")
+        p = self.load_policy(
+            {
+                "name": "iam-role-has-statement-inline",
+                "resource": "iam-role",
+                "filters": [
+                    {
+                        "type": "has-statement",
+                        "statements": [
+                            {
+                                "Effect": "Allow",
+                                "Action": "iam:*",
+                            }
+                        ],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+            config={"account_id": "123456789012"},
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["RoleName"], "test-role-iam-wildcard")
+        self.assertIn("c7n:CombinedPolicy", resources[0])
+
+    def test_iam_role_has_statement_managed(self):
+        session_factory = self.replay_flight_data("test_iam_role_has_statement_managed")
+        p = self.load_policy(
+            {
+                "name": "iam-role-has-statement-managed",
+                "resource": "iam-role",
+                "filters": [
+                    {
+                        "type": "has-statement",
+                        "statements": [
+                            {
+                                "Effect": "Allow",
+                                "Action": "organizations:*",
+                            }
+                        ],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+            config={"account_id": "123456789012"},
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["RoleName"], "test-role-managed-wildcard")
+
+    def test_iam_role_has_statement_no_match(self):
+        session_factory = self.replay_flight_data("test_iam_role_has_statement_no_match")
+        p = self.load_policy(
+            {
+                "name": "iam-role-has-statement-no-match",
+                "resource": "iam-role",
+                "filters": [
+                    {
+                        "type": "has-statement",
+                        "statements": [
+                            {
+                                "Effect": "Allow",
+                                "Action": "iam:*",
+                            }
+                        ],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+            config={"account_id": "123456789012"},
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 0)
+
+    def test_iam_role_has_statement_by_sid(self):
+        session_factory = self.replay_flight_data("test_iam_role_has_statement_inline")
+        p = self.load_policy(
+            {
+                "name": "iam-role-has-statement-by-sid",
+                "resource": "iam-role",
+                "filters": [
+                    {
+                        "type": "has-statement",
+                        "statement_ids": ["AllowIamWildcard"],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+            config={"account_id": "123456789012"},
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["RoleName"], "test-role-iam-wildcard")
+
+    def test_iam_role_has_statement_exact_action(self):
+        """Confirm that a concrete action like iam:CreateUser matches literally."""
+        session_factory = self.replay_flight_data("test_iam_role_has_statement_exact_action")
+        p = self.load_policy(
+            {
+                "name": "iam-role-has-statement-exact-action",
+                "resource": "iam-role",
+                "filters": [
+                    {
+                        "type": "has-statement",
+                        "statements": [
+                            {
+                                "Effect": "Allow",
+                                "Action": "iam:CreateUser",
+                            }
+                        ],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+            config={"account_id": "123456789012"},
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["RoleName"], "test-role-create-user")
+
+    def test_iam_role_has_statement_prefix_wildcard_literal(self):
+        """Confirm that iam:Create* in the filter matches the literal text iam:Create* in policy."""
+        session_factory = self.replay_flight_data("test_iam_role_has_statement_prefix_wildcard")
+        p = self.load_policy(
+            {
+                "name": "iam-role-has-statement-prefix-wildcard",
+                "resource": "iam-role",
+                "filters": [
+                    {
+                        "type": "has-statement",
+                        "statements": [
+                            {
+                                "Effect": "Allow",
+                                "Action": "iam:Create*",
+                            }
+                        ],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+            config={"account_id": "123456789012"},
+        )
+        resources = p.run()
+        # The filter finds the role because the policy has the literal text "iam:Create*"
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["RoleName"], "test-role-create-wildcard")
+
+    def test_iam_role_has_statement_no_wildcard_expansion(self):
+        """Confirm that has-statement does not expand wildcards: iam:CreateUser does
+        NOT match a policy statement containing iam:Create* as its action.
+        For semantic evaluation, use the check-permissions filter instead."""
+        session_factory = self.replay_flight_data("test_iam_role_has_statement_prefix_wildcard")
+        p = self.load_policy(
+            {
+                "name": "iam-role-has-statement-no-expand",
+                "resource": "iam-role",
+                "filters": [
+                    {
+                        "type": "has-statement",
+                        "statements": [
+                            {
+                                "Effect": "Allow",
+                                "Action": "iam:CreateUser",
+                            }
+                        ],
+                    }
+                ],
+            },
+            session_factory=session_factory,
+            config={"account_id": "123456789012"},
+        )
+        resources = p.run()
+        # No match because has-statement does literal comparison:
+        # "iam:CreateUser" != "iam:Create*"
+        self.assertEqual(len(resources), 0)
+
     def test_iam_group_has_inline_policy(self):
         session_factory = self.replay_flight_data("test_iam_group_has_inline_policy")
         self.patch(IamGroupInlinePolicy, "executor_factory", MainThreadExecutor)

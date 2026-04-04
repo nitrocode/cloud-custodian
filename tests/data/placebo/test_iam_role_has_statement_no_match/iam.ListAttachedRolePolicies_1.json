@@ -1,0 +1,12 @@
+{
+    "status_code": 200,
+    "data": {
+        "AttachedPolicies": [],
+        "IsTruncated": false,
+        "ResponseMetadata": {
+            "RequestId": "test-request-id-023",
+            "HTTPStatusCode": 200,
+            "HTTPHeaders": {}
+        }
+    }
+}
