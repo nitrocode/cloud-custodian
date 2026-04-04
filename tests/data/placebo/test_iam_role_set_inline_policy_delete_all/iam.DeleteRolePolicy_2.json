@@ -1,0 +1,11 @@
+{
+    "status_code": 200,
+    "data": {
+        "ResponseMetadata": {
+            "RetryAttempts": 0,
+            "HTTPStatusCode": 200,
+            "RequestId": "ccccdddd-1111-2222-3333-aaaabbbbdddd",
+            "HTTPHeaders": {}
+        }
+    }
+}

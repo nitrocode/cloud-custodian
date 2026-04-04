@@ -1320,6 +1320,117 @@ class SetGroupPolicy(SetPolicy):
         return policy_arns
 
 
+@Role.action_registry.register('set-inline-policy')
+class RoleSetInlinePolicy(BaseAction):
+    """Put or delete an inline policy on an IAM role.
+
+    Use ``state: put`` to create or replace an inline policy on a role.
+    The ``policy`` field is a list of IAM policy statements that will be
+    wrapped in a ``{"Version": "2012-10-17", "Statement": [...]}`` document.
+
+    Use ``state: delete`` to remove an inline policy by name.  Set
+    ``name: "*"`` to remove **all** inline policies from matching roles.
+
+    :example:
+
+    .. code-block:: yaml
+
+      - name: iam-role-set-inline-policy
+        resource: aws.iam-role
+        actions:
+          - type: set-inline-policy
+            state: put
+            name: AllowSSM
+            policy:
+              - Sid: AllowSSM
+                Effect: Allow
+                Action:
+                  - ssm:UpdateInstanceInformation
+                Resource: "*"
+
+    .. code-block:: yaml
+
+      - name: iam-role-delete-inline-policy
+        resource: aws.iam-role
+        actions:
+          - type: set-inline-policy
+            state: delete
+            name: AllowSSM
+
+    .. code-block:: yaml
+
+      - name: iam-role-delete-all-inline-policies
+        resource: aws.iam-role
+        actions:
+          - type: set-inline-policy
+            state: delete
+            name: "*"
+    """
+
+    schema = type_schema(
+        'set-inline-policy',
+        state={'enum': ['put', 'delete']},
+        name={'type': 'string'},
+        policy={
+            'type': 'array',
+            'items': {'type': 'object'},
+        },
+        required=['state', 'name'],
+    )
+
+    permissions = (
+        'iam:PutRolePolicy',
+        'iam:DeleteRolePolicy',
+        'iam:ListRolePolicies',
+    )
+
+    def validate(self):
+        if self.data.get('state') == 'put' and not self.data.get('policy'):
+            raise PolicyValidationError(
+                'set-inline-policy with state: put requires a policy on %s' % (
+                    self.manager.data))
+
+    def process(self, resources):
+        client = local_session(self.manager.session_factory).client('iam')
+        state = self.data['state']
+        name = self.data['name']
+        for r in resources:
+            if state == 'put':
+                self.put_inline_policy(client, r, name, self.data['policy'])
+            elif state == 'delete':
+                if name == '*':
+                    self.delete_all_inline_policies(client, r)
+                else:
+                    self.delete_inline_policy(client, r, name)
+
+    def put_inline_policy(self, client, resource, policy_name, statements):
+        policy_document = json.dumps({
+            'Version': '2012-10-17',
+            'Statement': statements,
+        })
+        client.put_role_policy(
+            RoleName=resource['RoleName'],
+            PolicyName=policy_name,
+            PolicyDocument=policy_document,
+        )
+
+    def delete_inline_policy(self, client, resource, policy_name):
+        try:
+            client.delete_role_policy(
+                RoleName=resource['RoleName'],
+                PolicyName=policy_name,
+            )
+        except client.exceptions.NoSuchEntityException:
+            return
+
+    def delete_all_inline_policies(self, client, resource):
+        if 'c7n:InlinePolicies' not in resource:
+            resource['c7n:InlinePolicies'] = client.list_role_policies(
+                RoleName=resource['RoleName'])['PolicyNames']
+        for policy_name in resource.get('c7n:InlinePolicies', []):
+            self.delete_inline_policy(client, resource, policy_name)
+
+
 @Role.action_registry.register('delete')
 class RoleDelete(BaseAction):
     """Delete an IAM Role.
